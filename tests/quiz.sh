@@ -49,12 +49,14 @@ expect_true "first quiz call freezes the key" 'helper key < "$k" | grep -q "key 
 
 # grading: progress, then one failure of each kind in its own round ---------
 hook quiz-post.sh "$(post_json "$ask" "$(correct_answers "$k" 1 4)")"; expect_ctx "partial round reports progress only" 'progress: 4 of 10'
+expect_true "progress shows the developer no message" '[ -z "$(sysmsg)" ]'
 hook quiz-pre.sh "$(pre_json "$ask")"; expect_deny "an answered question cannot be asked again" 'already answered'
 ask_and_answer "$k" 5 8 "$(correct_answers "$k" 5 8)"
 # question 9 wrong, question 10 correct
 ans="$(correct_answers "$k" 9 10 | jq -c --arg q "$(jq -r '.questions[8].question' "$k")" --arg w "$(jq -r '.questions[8] | (.options - [.correct])[0]' "$k")" '.[$q] = $w')"
 ask_and_answer "$k" 9 10 "$ans"
 expect_ctx "a wrong answer fails its topic" 'round 1 result: 9 of 10 correct. Failed topics: t9'
+expect_true "a failed round does not celebrate" '[ -z "$(sysmsg)" ]'
 expect_ctx "the report gives the developer answer" 'Developer answer: Alpha Question 9'
 expect_ctx "the report gives the correct answer" 'Correct answer: Gamma Question 9'
 expect_ctx "the report gives the explanation and evidence" 'Evidence: app.py:5'
@@ -105,6 +107,8 @@ expect_true "valid retry key registers round 2" 'helper key < "$k2" | grep -q "r
 hook quiz-pre.sh "$(pre_json "$(ask_json "$k" 1 2 "R2 ")")"; expect_deny "round 1 questions are not in the round 2 key" 'not in the round key'
 ask_and_answer "$k2" 1 2 "$(correct_answers "$k2" 1 2)" "" "R2 "
 expect_ctx "an all-correct retry round passes" 'PASS. Round 2: 2 of 2 correct'
+expect_ctx "the pass tells Claude the score history" 'Scores: round 1 8/10, round 2 2/2'
+expect_sysmsg "the pass celebrates to the developer directly" 'PR quiz passed! feat at [0-9a-f]{7}\. Scores: round 1 8/10, round 2 2/2\. The PR gate is open'
 expect_true "the pass is written" has_pass
 expect_true "the pass records 2 rounds" '[ "$(jq -r .rounds "$(state_dir)/pass.json")" = 2 ]'
 expect_true "start after a pass needs no quiz" 'helper start | grep -q "No quiz is needed"'

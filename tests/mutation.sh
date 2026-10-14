@@ -61,6 +61,7 @@ mut env-gh-repo hooks/pr-gate.sh gate '        case "$w" in GH_REPO=*) GH_REPO_C
 mut repo-host hooks/_lib.sh gate 'u="${host%%:*}/${u#*/}"' 'u="${u#*/}"'
 mut gh-merge-base hooks/_lib.sh gate 'b="$(git config --get "branch.${PRQ_BRANCH}.gh-merge-base" 2>/dev/null)"' 'b=""'
 mut delta-revert hooks/_lib.sh quiz '[ -n "$files" ] || files="$(git diff --name-only "$3" HEAD | sort -u)"' ':'
+mut celebration hooks/quiz-post.sh quiz '{systemMessage:$m, hookSpecificOutput' '{hookSpecificOutput'
 mut alias-resolution hooks/pr-gate.sh gate '[ -n "$exp" ] || return 0' 'return 0'
 mut base-binding hooks/_lib.sh gate 'if [ "$p_base" != "$base" ]; then' 'if false; then'
 mut stable-patch-id hooks/_lib.sh gate '| git patch-id --verbatim | cut' '| git patch-id --stable | cut'

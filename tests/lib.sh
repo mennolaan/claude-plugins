@@ -46,6 +46,7 @@ tool_in() { jq -cn --arg t "$1" --argjson i "$2" --arg d "$3" '{tool_name:$t,too
 
 reason() { printf '%s' "$OUT" | jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null; }
 context() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null; }
+sysmsg() { printf '%s' "$OUT" | jq -r '.systemMessage // empty' 2>/dev/null; }
 
 expect_deny() { # <name> <regex in the reason>
   local r; r="$(reason)"
@@ -59,6 +60,10 @@ expect_allow() { # <name>
 expect_ctx() { # <name> <regex in the additional context>
   local c; c="$(context)"
   if [ "$RC" = 0 ] && printf '%s' "$c" | grep -Eq -- "$2"; then ok "$1"; else bad "$1" "want context matching /$2/, got rc=$RC out=$OUT err=$ERR"; fi
+}
+expect_sysmsg() { # <name> <regex in the message shown to the developer>
+  local m; m="$(sysmsg)"
+  if [ "$RC" = 0 ] && printf '%s' "$m" | grep -Eq -- "$2"; then ok "$1"; else bad "$1" "want systemMessage matching /$2/, got rc=$RC out=$OUT"; fi
 }
 expect_true() { if (set +o pipefail; eval "$2"); then ok "$1"; else bad "$1" "condition false: $2"; fi; }
 

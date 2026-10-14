@@ -78,7 +78,12 @@ if [ "$nfail" -eq 0 ]; then
       history:(.history + [{round:.round, total:(.results | length), correct:(.results | length), failed:[]}])}' \
     | prq_write_json "${PRQ_STATE}/pass.json" || say "pr-quiz ERROR: all answers are correct, but ${PRQ_STATE}/pass.json was not written."
   rm -f "$round" "${PRQ_STATE}"/key-*.json
-  say "pr-quiz: PASS. Round ${n}: ${correct} of ${total} correct, so every topic is now correct. The PR gate is open for branch ${PRQ_BRANCH} at ${head:0:7} (base ${base}). Tell the developer the result. If a PR command was blocked before the quiz, run it again now."
+  scores="$(jq -r '[.history[] | "round \(.round) \(.correct)/\(.total)"] | join(", ")' "${PRQ_STATE}/pass.json")"
+  # systemMessage reaches the developer directly; additionalContext reaches Claude.
+  jq -cn --arg c "pr-quiz: PASS. Round ${n}: ${correct} of ${total} correct, so every topic is now correct. Scores: ${scores}. The PR gate is open for branch ${PRQ_BRANCH} at ${head:0:7} (base ${base}). Tell the developer the result and the scores. If a PR command was blocked before the quiz, run it again now." \
+    --arg m "🎆 PR quiz passed! ${PRQ_BRANCH} at ${head:0:7}. Scores: ${scores}. The PR gate is open. 🎉" \
+    '{systemMessage:$m, hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
+  exit 0
 fi
 
 printf '%s' "$updated" | jq --argjson failed "$failed" --argjson total "$total" --argjson correct "$correct" \

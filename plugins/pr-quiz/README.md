@@ -10,7 +10,7 @@ Claude Code writes code fast. Before it opens a pull request for you, you should
 4. A hook grades your real answers against the frozen key. Claude never grades.
 5. After the 10 questions you get your score. Claude explains every wrong answer and every "I don't know", with the code location that proves the correct answer.
 6. Claude asks whether to retry. A retry asks one new question for each failed topic. This repeats until every topic is correct.
-7. The pass is recorded for the branch, base and repo. Claude runs the PR command again and the gate lets it through.
+7. You pass. Claude Code shows you a celebration line with your scores per round, straight from the grading hook. The pass is recorded for the branch, base and repo. Claude runs the PR command again and the gate lets it through.
 
 After a pass:
 

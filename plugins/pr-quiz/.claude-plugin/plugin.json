@@ -1,6 +1,6 @@
 {
   "name": "pr-quiz",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blocks Claude from opening a pull request until you pass a multiple-choice quiz about the branch diff. Hooks grade your real answers.",
   "author": { "name": "Menno Laan" },
   "license": "MIT",
