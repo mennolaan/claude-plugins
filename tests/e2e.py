@@ -112,9 +112,17 @@ def evaluate(work):
         "round 1 graded 8 of 10 (1 wrong, 1 IDK)": bool(hist) and hist[0].get("correct") == 8 and len(hist[0].get("failed", [])) == 2,
         "retry round registered for the 2 failed topics": any(re.search(r"registered round 2: 2 questions", r) for r in results.values()),
         "pass written for the current HEAD": pas.get("head") == head and pas.get("rounds", 0) >= 2,
-        "gh pr create ran after the pass": bool(after),
-        "the gate did not block it after the pass": bool(after) and all("pr-quiz:" not in results.get(i, "") for i in after),
+        "no gh pr create after the pass was blocked": all("pr-quiz:" not in results.get(i, "") for i in after),
+        "the real gate allows gh pr create at the final HEAD": gate_allows(repo),
     }
+
+
+def gate_allows(repo):
+    """Runs the plugin's gate hook on the final repo state: Claude may or may not try the PR itself."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "gh pr create --draft --fill"}, "cwd": repo})
+    r = subprocess.run(["bash", os.path.join(PLUGIN, "hooks", "pr-gate.sh")], input=payload, capture_output=True, text=True,
+                       env=dict(os.environ, CLAUDE_PLUGIN_ROOT=PLUGIN))
+    return r.returncode == 0 and r.stdout.strip() == ""
 
 
 if "--check" in sys.argv:
