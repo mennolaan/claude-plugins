@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # v7.0.1, the latest release as of 2026-10-14
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -S warning -x plugins/pr-quiz/hooks/*.sh plugins/pr-quiz/skills/quiz/scripts/pr-quiz plugins/pr-quiz/evals/*/fixture.sh tests/*.sh
+      # macOS puts /bin first so that every nested bash is the system bash 3.2.
+      - name: matrix
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then export PATH="/bin:$PATH"; fi
+          bash tests/run.sh
+      - name: mutation check
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then export PATH="/bin:$PATH"; fi
+          bash tests/mutation.sh
