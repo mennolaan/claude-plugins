@@ -44,7 +44,7 @@ You can also start a quiz yourself at any time: `/pr-quiz:quiz`.
 
 | Blocked until you pass | Notes |
 |---|---|
-| `gh pr create`, `gh pr new` | Also after `cd`, `&&`, `;`, env prefixes, `bash -c`, `command gh` and gh aliases. `--head`, `--base` and `--repo` must match the quizzed branch, base and origin. |
+| `gh pr create`, `gh pr new` | Also after `cd`, `pushd`, `&&`, `;`, line continuations, env prefixes, `bash -c`, `command gh`, gh flags before the subcommand and gh aliases. `--head`, `--base` and `--repo` must match the quizzed branch, base and origin. |
 | `gh pr ready` | Only without a PR number, so that it acts on the current branch. |
 | `glab mr create`, `az repos pr create`, `hub pull-request`, `tea pr create` | Head and base are checked. |
 | MCP tools named `*create_pull_request` or `*create_merge_request` | Head, base, owner and repo are checked. |
@@ -58,7 +58,8 @@ The plugin also blocks Claude from writing the quiz state (`<git dir>/pr-quiz/`)
 pr-quiz is a guardrail against a PR that nobody understood. It is not a security boundary.
 
 - Claude writes the answer key and can read it. Claude also chooses the questions, so a weak quiz is possible. Every question must cite a file from the diff, and you see every question.
-- The gate parses shell commands with heuristics. A PR command inside a script file or a shell function that Claude wrote is out of its reach.
+- The gate parses shell commands with heuristics. It cannot see a PR command that is defined somewhere else and then run by name. That includes a script file, a shell function or alias, a git alias, a Makefile or package.json script, and code passed to another interpreter (`python -c`, `node -e`).
+- When the gate cannot resolve a command, it blocks it. Examples are a program name in a variable or `$(...)`, and a `cd` to a variable, `cd -` or `popd` before a PR command.
 - Another hook can answer a question for you (an `AskUserQuestion` hook with `updatedInput`). pr-quiz cannot tell that answer from yours. It refuses questions that arrive with answers already filled in.
 - You can always open a PR yourself in your terminal or in the browser. The gate stops Claude, not you.
 - Headless runs (`claude -p` without a permission prompt tool) and subagents cannot ask questions. With pr-quiz on, they cannot open PRs.

@@ -24,6 +24,22 @@ done
 hook pr-gate.sh "$(tool_in mcp__github__create_pull_request '{"owner":"acme","repo":"demo","head":"feat","base":"main","title":"x"}' "$REPO")"
 expect_deny "no pass denies MCP create_pull_request" 'mode full'
 
+# Parser forms found in review: continuations, gh flags before the action,
+# dynamic program names, and directory changes the gate cannot resolve.
+hook pr-gate.sh "$(bash_in "$(printf 'gh \\\npr create --fill')" "$REPO")"; expect_deny "line continuation inside the command" 'mode full'
+for c in 'gh --repo acme/demo pr create --fill' 'gh -R acme/demo pr create --fill' 'gh pr -R acme/demo create --fill' 'gh pr --repo=acme/demo new --fill'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "gh flag before the subcommand or action: $c" 'mode full'
+done
+hook pr-gate.sh "$(bash_in 'gh -R acme/demo pr list' "$REPO")"; expect_allow "gh flag before a read-only action is allowed"
+for c in 'G=gh; $G pr create --fill' '"$GH" pr create --fill' '${HUB:-hub} pull-request -m x' '$(echo gh) pr create --fill' '`echo gh` pr new --fill'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "dynamic program name: $c" 'cannot resolve the program name'
+done
+hook pr-gate.sh "$(bash_in 'X=ls; $X -la' "$REPO")"; expect_allow "dynamic program name without a PR action is allowed"
+for c in 'cd "$OTHER" && gh pr create --fill' 'cd - && gh pr create --fill' 'popd; gh pr create --fill' 'pushd -n x && gh pr create --fill'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "unresolvable directory: $c" 'cannot tell which checkout'
+done
+hook pr-gate.sh "$(bash_in 'pushd sub && gh pr create --fill' "$REPO")"; expect_deny "pushd is tracked like cd" 'mode full'
+
 # Neighbours that create nothing are allowed.
 for c in 'gh pr view 3' 'gh pr list' 'gh pr checkout 3' 'gh api repos/acme/demo/pulls' 'git push -u origin feat' \
          'echo "gh pr create"' 'git commit -m "docs: explain gh pr create"' 'curl https://api.github.com/repos/acme/demo/pulls' \
@@ -64,6 +80,11 @@ hook pr-gate.sh "$(bash_in 'GH_REPO=evil/fork gh pr create --fill' "$REPO")"; ex
 hook pr-gate.sh "$(bash_in 'export GH_REPO=evil/fork; gh pr create --fill' "$REPO")"; expect_deny "pass does not cover export GH_REPO" 'repo is evil/fork'
 hook pr-gate.sh "$(bash_in 'gh pr ready 123' "$REPO")"; expect_deny "pass does not cover gh pr ready <number>" 'cannot map'
 hook pr-gate.sh "$(bash_in 'gh api -X POST repos/acme/demo/pulls -f head=feat' "$REPO")"; expect_deny "pass does not open the raw API" 'raw API'
+hook pr-gate.sh "$(bash_in 'gh --repo evil/fork pr create --fill' "$REPO")"; expect_deny "pass does not cover a leading --repo evil/fork" 'repo is evil/fork'
+hook pr-gate.sh "$(bash_in 'cd /tmp && cd - && gh pr create --fill' "$REPO")"; expect_deny "pass does not cover an unresolvable directory" 'cannot tell which checkout'
+OTHER="$(mk_repo)"
+hook pr-gate.sh "$(bash_in "cd ${OTHER} && gh pr create --fill" "$REPO")"; expect_deny "a pass in one repo does not cover cd into another" 'No quiz pass exists'
+hook pr-gate.sh "$(bash_in "pushd ${OTHER} && gh pr create --fill" "$REPO")"; expect_deny "a pass in one repo does not cover pushd into another" 'No quiz pass exists'
 hook pr-gate.sh "$(tool_in mcp__github__create_pull_request '{"owner":"acme","repo":"demo","head":"other","base":"main"}' "$REPO")"
 expect_deny "pass does not cover MCP head other" 'head is other'
 hook pr-gate.sh "$(tool_in mcp__github__create_pull_request '{"owner":"evil","repo":"fork","head":"feat","base":"main"}' "$REPO")"

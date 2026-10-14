@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # pr-quiz gate. PreToolUse on Bash and on MCP pull-request tools.
 # Denies PR creation until the developer holds a quiz pass for the branch,
-# base and repo that the PR uses. Heuristic shell parsing: a command inside a
-# script file or a shell function is out of reach (README, Limits).
+# base and repo that the PR uses. Heuristic shell parsing: a command defined
+# elsewhere and run by name is out of reach (README, Limits); what it cannot
+# resolve (dynamic program names or directories) it denies.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
@@ -13,7 +14,7 @@ WRAPPERS=" bash sh zsh dash ksh eval xargs env nohup time timeout gtimeout sudo 
 
 prq_read_input
 case "$PRQ_IN" in
-  *gh*|*glab*|*az*|*hub*|*tea*|*curl*|*mcp__*) ;;
+  *gh*|*glab*|*az*|*hub*|*tea*|*curl*|*mcp__*|*pr*|*pull*|*mr*|*'$'*) ;;
   *) exit 0 ;;
 esac
 prq_require_tools
@@ -42,6 +43,7 @@ has_word() { local n="$1" w; shift; for w in "$@"; do [ "$w" = "$n" ] && return 
 # decide <label> <head> <base> <repo> <dir>: allow (return) or deny (exit).
 decide() {
   local label="$1" head="$2" base="$3" repo="$4" dir="$5" r
+  [ -n "$dir" ] || prq_deny "pr-quiz: cannot tell which checkout ${label} runs in (a cd or pushd with a variable or an option, cd -, or popd). Run ${label} from the checkout without a dynamic directory change."
   prq_repo_ctx "$dir" || prq_deny "pr-quiz: ${label} runs outside a git checkout (${dir}). Run it from the checkout of the PR branch, so that pr-quiz can check the quiz pass."
   [ -n "$PRQ_BRANCH" ] || prq_deny "pr-quiz: HEAD is detached in ${PRQ_TOP}. Check out the PR branch, then run ${label} again."
   head="${head#refs/heads/}"; head="${head##*:}"
@@ -104,10 +106,34 @@ curl_posts_pr() {
   [ "$url" = 1 ] && [ "$post" = 1 ]
 }
 
+# gh_normalize <words after gh>: sets GH_WORDS. gh accepts flags before the
+# subcommand and between "pr" and its action ("gh --repo x pr create");
+# they move to the end, so that $1 is the subcommand and $2 the action.
+gh_normalize() {
+  local -a w=("$@") lead=() out=()
+  local n=$# i=0 level
+  for level in subcommand action; do
+    while [ "$i" -lt "$n" ]; do
+      case "${w[$i]}" in
+        -R|--repo) lead+=("${w[$i]}" "${w[$((i + 1))]:-}"); i=$((i + 2)) ;;
+        -*) lead+=("${w[$i]}"); i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [ "$i" -lt "$n" ] || break
+    out+=("${w[$i]}"); i=$((i + 1))
+    [ "$level" = subcommand ] && [ "${out[0]}" = pr ] || break
+  done
+  while [ "$i" -lt "$n" ]; do out+=("${w[$i]}"); i=$((i + 1)); done
+  GH_WORDS=(${out[@]+"${out[@]}"} ${lead[@]+"${lead[@]}"})
+}
+
 # check_gh <depth> <words after 'gh'>
 check_gh() {
   local depth="$1" sub exp rest repo w prev ready_base
   shift
+  gh_normalize "$@"
+  set -- ${GH_WORDS[@]+"${GH_WORDS[@]}"}
   sub="${1:-}"
   case "$sub" in
     pr)
@@ -179,11 +205,25 @@ check_words() {
   done
   [ $# -gt 0 ] || return 0
   prog="${1##*/}"
-  if [ "$prog" = cd ]; then
+  case "$prog ${2:-}" in
+    "pr create"|"pr new"|"pr ready"|"mr create"|"mr new")
+      prq_deny "pr-quiz: cannot resolve the program name in front of ${prog} ${2:-} (a command substitution or a variable). Use a literal program name, for example gh pr create." ;;
+  esac
+  case "$prog" in
+    *'$'*)
+      case " $* " in
+        *" pr create"*|*" pr new"*|*" pr ready"*|*" mr create"*|*" mr new"*|*pull-request*)
+          prq_deny "pr-quiz: cannot resolve the program name ${1}, and the command looks like it creates a pull request. Use a literal program name, for example gh pr create." ;;
+      esac
+      return 0 ;;
+  esac
+  if [ "$prog" = popd ]; then EFF_DIR=""; return 0; fi
+  if [ "$prog" = cd ] || [ "$prog" = pushd ]; then
     local t="${2:-$HOME}"
     case "$t" in \~) t="$HOME" ;; \~/*) t="${HOME}/${t#\~/}" ;; esac
-    case "$t" in /*) ;; *) t="${EFF_DIR}/${t}" ;; esac
-    [ -d "$t" ] && EFF_DIR="$(cd "$t" && pwd)"
+    case "$t" in *'$'*|-*|+*) EFF_DIR=""; return 0 ;; esac
+    case "$t" in /*) ;; *) [ -n "$EFF_DIR" ] || return 0; t="${EFF_DIR}/${t}" ;; esac
+    if [ -d "$t" ]; then EFF_DIR="$(cd "$t" && pwd)"; else EFF_DIR=""; fi
     return 0
   fi
   if [ "$prog" = export ]; then
@@ -232,15 +272,17 @@ check_words() {
 
 # check_command <depth> <command string>
 check_command() {
-  local depth="$1" seg w
+  local depth="$1" seg w cont=$'\\\n' cmd="$2"
   local -a words raw
+  cmd="${cmd//"$cont"/ }"
+  cmd="$(printf '%s' "$cmd" | sed -E 's/[$][{][^}]*[}]/$DYN/g')"
   case "$2" in *createPullRequest*|*createMergeRequest*|*mergeRequestCreate*) deny_raw "a GraphQL mutation" ;; esac
   while IFS= read -r seg; do
     words=()
     read -r -a raw <<< "$seg" || true
     for w in ${raw[@]+"${raw[@]}"}; do words+=("$(unquote "$w")"); done
     [ ${#words[@]} -gt 0 ] && check_words "$depth" "${words[@]}"
-  done < <(printf '%s\n' "$2" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
+  done < <(printf '%s\n' "$cmd" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
 }
 
 EFF_DIR="$hook_cwd"

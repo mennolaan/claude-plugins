@@ -45,6 +45,13 @@ mut head-binding hooks/pr-gate.sh gate 'if [ -n "$head" ] && [ "$head" != "$PRQ_
 mut repo-binding hooks/pr-gate.sh gate '[ "$r" = "$PRQ_ORIGIN" ] || prq_deny' 'true || prq_deny'
 mut raw-api hooks/pr-gate.sh gate 'api_posts_pr "$@" && deny_raw "gh api"' 'true'
 mut graphql hooks/pr-gate.sh gate 'case "$2" in *createPullRequest*' 'case "$2" in NOPE*'
+mut continuation hooks/pr-gate.sh gate 'cmd="${cmd//"$cont"/ }"' ':'
+mut gh-leading-flags hooks/pr-gate.sh gate 'gh_normalize "$@"' 'GH_WORDS=("$@")'
+mut dynamic-program hooks/pr-gate.sh gate '*'"'"'$'"'"'*)
+      case " $* " in' '*NOPE*)
+      case " $* " in'
+mut unknown-dir hooks/pr-gate.sh gate '[ -n "$dir" ] || prq_deny' 'true || prq_deny'
+mut pushd hooks/pr-gate.sh gate 'if [ "$prog" = cd ] || [ "$prog" = pushd ]; then' 'if [ "$prog" = cd ]; then'
 mut alias-resolution hooks/pr-gate.sh gate '[ -n "$exp" ] || return 0' 'return 0'
 mut base-binding hooks/_lib.sh gate 'if [ "$p_base" != "$base" ]; then' 'if false; then'
 mut stable-patch-id hooks/_lib.sh gate '| git patch-id --verbatim | cut' '| git patch-id --stable | cut'
