@@ -41,16 +41,25 @@ prq_field() { printf '%s' "${PRQ_IN}" | jq -r "($1) // empty"; }
 
 # Repo context --------------------------------------------------------------
 
-# prq_norm_repo <url | OWNER/REPO | HOST/OWNER/REPO>: prints lowercase owner/repo.
+# prq_norm_repo <url | OWNER/REPO | HOST/OWNER/REPO>: prints lowercase
+# host/owner/repo, or owner/repo when the input names no host.
 prq_norm_repo() {
-  local u="$1" first
+  local u="$1" host
   u="${u%/}"; u="${u%.git}"
   case "$u" in
-    *://*) u="${u#*://}"; u="${u#*@}"; u="${u#*/}" ;;
-    *@*:*) u="${u#*:}" ;;
-    */*/*) first="${u%%/*}"; case "$first" in *.*) u="${u#*/}" ;; esac ;;
+    *://*) u="${u#*://}"; u="${u#*@}"; host="${u%%/*}"; u="${host%%:*}/${u#*/}" ;;
+    *@*:*) u="${u#*@}"; u="${u%%:*}/${u#*:}" ;;
   esac
   printf '%s' "$u" | tr '[:upper:]' '[:lower:]'
+}
+
+# prq_same_repo <a> <b>: normalized repos match. The host counts when both name one.
+prq_same_repo() {
+  local a="$1" b="$2"
+  case "${a%%/*}" in *.*) case "${b%%/*}" in *.*) [ "$a" = "$b" ]; return ;; esac ;; esac
+  case "${a%%/*}" in *.*) a="${a#*/}" ;; esac
+  case "${b%%/*}" in *.*) b="${b#*/}" ;; esac
+  [ "$a" = "$b" ]
 }
 
 # prq_repo_ctx <dir>: cd into the repo and set PRQ_TOP, PRQ_GITDIR, PRQ_BRANCH,
@@ -80,6 +89,15 @@ prq_default_base() {
   printf '%s' "$b"
 }
 
+# prq_pr_base: the base gh uses when none is given: the branch's gh-merge-base
+# config, else the origin default branch.
+prq_pr_base() {
+  local b
+  b="$(git config --get "branch.${PRQ_BRANCH}.gh-merge-base" 2>/dev/null)"
+  [ -n "$b" ] || b="$(prq_default_base)"
+  printf '%s' "$b"
+}
+
 # prq_base_ref <name>: the ref to compare against: origin/<name>, else <name>.
 prq_base_ref() {
   if git show-ref -q --verify "refs/remotes/origin/$1"; then printf 'origin/%s' "$1"
@@ -99,12 +117,16 @@ prq_patch_id() {
 # Scope ---------------------------------------------------------------------
 
 # prq_scope_files <base ref> <mode> <from>: files a question may cite, one per line.
-# Full: merge-base..HEAD. Delta: files changed since <from> that are also branch files.
+# Full: merge-base..HEAD. Delta: files changed since <from> that are also branch
+# files (this drops base changes that a merge brought in); when none are, as after
+# a revert, every file changed since <from>.
 prq_scope_files() {
-  local mb
+  local mb files
   mb="$(git merge-base "$1" HEAD)" || return 1
   if [ "$2" = delta ]; then
-    comm -12 <(git diff --name-only "$3" HEAD | sort -u) <(git diff --name-only "$mb" HEAD | sort -u)
+    files="$(comm -12 <(git diff --name-only "$3" HEAD | sort -u) <(git diff --name-only "$mb" HEAD | sort -u))"
+    [ -n "$files" ] || files="$(git diff --name-only "$3" HEAD | sort -u)"
+    printf '%s\n' "$files"
   else
     git diff --name-only "$mb" HEAD | sort -u
   fi

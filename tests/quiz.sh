@@ -132,4 +132,14 @@ ask_and_answer "$k" 1 3 "$(correct_answers "$k" 1 3)"
 expect_ctx "an all-correct delta round passes" 'PASS'
 hook pr-gate.sh "$(bash_in 'gh pr create --fill' "$REPO")"; expect_allow "the delta pass opens the gate"
 
+# A delta that only reverts a file still has files to cite.
+REPO="$(mk_repo)"
+(cd "$REPO" && printf 'more\n' >> README.md && git commit -qam "docs: more")
+pass_quiz
+(cd "$REPO" && git checkout -q main -- app.py && git commit -qm "revert app.py")
+out="$(helper start)"
+expect_true "revert-only delta lists the reverted file" 'printf "%s" "$out" | grep -q "^  app.py$"'
+make_key 3 Revert > "$k"
+expect_true "revert-only delta key registers" 'helper key < "$k" | grep -q "registered round 1: 3 questions"'
+
 finish

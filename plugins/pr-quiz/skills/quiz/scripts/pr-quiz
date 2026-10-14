@@ -39,7 +39,7 @@ cmd_start() {
       *) fail "unknown argument: $1" ;;
     esac
   done
-  [ -n "$base" ] || base="$(prq_default_base)"
+  [ -n "$base" ] || base="$(prq_pr_base)"
   [ -n "$base" ] || fail "cannot find the default branch of origin. Run: pr-quiz start --base <branch>"
   base_ref="$(prq_base_ref "$base")" || fail "base branch ${base} is not known here. Run: git fetch origin ${base}"
   prq_need "$base"

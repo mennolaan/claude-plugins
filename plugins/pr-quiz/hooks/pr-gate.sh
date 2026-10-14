@@ -52,10 +52,10 @@ decide() {
   fi
   if [ -n "$repo" ]; then
     r="$(prq_norm_repo "$repo")"
-    [ "$r" = "$PRQ_ORIGIN" ] || prq_deny "pr-quiz: the PR repo is ${r}, but origin is ${PRQ_ORIGIN:-not set}. pr-quiz checks PRs to the origin repo only. Remove the repo option, or open this PR in your own terminal."
+    prq_same_repo "$r" "$PRQ_ORIGIN" || prq_deny "pr-quiz: the PR repo is ${r}, but origin is ${PRQ_ORIGIN:-not set}. pr-quiz checks PRs to the origin repo only. Remove the repo option, or open this PR in your own terminal."
   fi
   base="${base#refs/heads/}"
-  [ -n "$base" ] || base="$(prq_default_base)"
+  [ -n "$base" ] || base="$(prq_pr_base)"
   [ -n "$base" ] || prq_deny "pr-quiz: cannot find the default branch of origin. Add the base branch option to ${label}, for example --base main."
   prq_base_ref "$base" >/dev/null || prq_deny "pr-quiz: base branch ${base} is not known in this checkout. Run: git fetch origin ${base}. Then run ${label} again."
   prq_need "$base"
@@ -76,6 +76,8 @@ api_posts_pr() {
     case "$w" in
       -X|--method) method="${1:-}"; [ $# -gt 0 ] && shift ;;
       -X?*) method="${w#-X}" ;;
+      -[a-zA-Z]*X) method="${1:-}"; [ $# -gt 0 ] && shift ;;
+      -[a-zA-Z]*X?*) method="${w#*X}" ;;
       --method=*) method="${w#--method=}" ;;
       -f|-F|--field|--raw-field|--input) implied=1; [ $# -gt 0 ] && shift ;;
       -f?*|-F?*|--field=*|--raw-field=*|--input=*) implied=1 ;;
@@ -100,9 +102,13 @@ curl_posts_pr() {
       http*://*/pulls|http*://*/pulls/|http*://*/pulls\?*|http*://*/merge_requests|http*://*/merge_requests\?*|http*://*/pullrequests|http*://*/pullrequests\?*) url=1 ;;
     esac
   done
-  case "$all" in
-    *" -X POST "*|*" -XPOST "*|*" --request POST "*|*" --request=POST "*|*" -d "*|*" -d"*|*" --data"*|*" --json "*|*" -F "*|*" --form "*) post=1 ;;
-  esac
+  for w in "$@"; do
+    case "$w" in
+      --request*|--data*|--json*|--form*|--upload-file*) post=1 ;;
+      --*) ;;
+      -*X*|-*d*|-*F*|-*T*) post=1 ;;
+    esac
+  done
   [ "$url" = 1 ] && [ "$post" = 1 ]
 }
 
@@ -114,8 +120,10 @@ gh_normalize() {
   local n=$# i=0 level
   for level in subcommand action; do
     while [ "$i" -lt "$n" ]; do
+      # Like gh's command lookup: a bare --flag or -x takes the next word as its value.
       case "${w[$i]}" in
-        -R|--repo) lead+=("${w[$i]}" "${w[$((i + 1))]:-}"); i=$((i + 2)) ;;
+        --help|-h|--*=*|-?*=*) lead+=("${w[$i]}"); i=$((i + 1)) ;;
+        --?*|-?) lead+=("${w[$i]}" "${w[$((i + 1))]:-}"); i=$((i + 2)) ;;
         -*) lead+=("${w[$i]}"); i=$((i + 1)) ;;
         *) break ;;
       esac
@@ -199,7 +207,7 @@ check_words() {
     case "$1" in
       GH_REPO=*) GH_REPO_CUR="${1#GH_REPO=}"; shift ;;
       [A-Za-z_]*=*) shift ;;
-      if|then|else|elif|do|while|until|'!') shift ;;
+      if|then|else|elif|do|while|until|'!'|'{'|'}') shift ;;
       *) break ;;
     esac
   done
@@ -235,6 +243,7 @@ check_words() {
       shift; i=0
       for w in "$@"; do
         case "$GATED_PROGS" in *" ${w##*/} "*) shift "$i"; check_words "$((depth + 1))" "$@"; return 0 ;; esac
+        case "$w" in GH_REPO=*) GH_REPO_CUR="${w#GH_REPO=}" ;; esac
         i=$((i + 1))
       done
       return 0
@@ -274,15 +283,23 @@ check_words() {
 check_command() {
   local depth="$1" seg w cont=$'\\\n' cmd="$2"
   local -a words raw
+  local -a dirs=()
   cmd="${cmd//"$cont"/ }"
-  cmd="$(printf '%s' "$cmd" | sed -E 's/[$][{][^}]*[}]/$DYN/g')"
+  # ${...} becomes one dynamic word; redirections and their targets go.
+  cmd="$(printf '%s' "$cmd" | sed -E -e 's/[$][{][^}]*[}]/$DYN/g' -e 's/[0-9]*(>>?|<)[&|]?[[:space:]]*[^[:space:]]*/ /g')"
+  # A subshell keeps its own directory: "(" and ")" become markers.
+  cmd="$(printf '%s' "$cmd" | sed -e 's/(/;__PRQ_OPEN__;/g' -e 's/)/;__PRQ_CLOSE__;/g')"
   case "$2" in *createPullRequest*|*createMergeRequest*|*mergeRequestCreate*) deny_raw "a GraphQL mutation" ;; esac
   while IFS= read -r seg; do
+    case "$seg" in
+      *__PRQ_OPEN__*) dirs+=("$EFF_DIR"); continue ;;
+      *__PRQ_CLOSE__*) [ ${#dirs[@]} -gt 0 ] && { EFF_DIR="${dirs[$((${#dirs[@]} - 1))]}"; unset "dirs[$((${#dirs[@]} - 1))]"; }; continue ;;
+    esac
     words=()
     read -r -a raw <<< "$seg" || true
     for w in ${raw[@]+"${raw[@]}"}; do words+=("$(unquote "$w")"); done
     [ ${#words[@]} -gt 0 ] && check_words "$depth" "${words[@]}"
-  done < <(printf '%s\n' "$cmd" | tr ';&|(){}`' '\n\n\n\n\n\n\n\n')
+  done < <(printf '%s\n' "$cmd" | tr ';&|()`' '\n\n\n\n\n\n')
 }
 
 EFF_DIR="$hook_cwd"

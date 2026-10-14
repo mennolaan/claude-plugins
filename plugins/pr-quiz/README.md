@@ -44,7 +44,7 @@ You can also start a quiz yourself at any time: `/pr-quiz:quiz`.
 
 | Blocked until you pass | Notes |
 |---|---|
-| `gh pr create`, `gh pr new` | Also after `cd`, `pushd`, `&&`, `;`, line continuations, env prefixes, `bash -c`, `command gh`, gh flags before the subcommand and gh aliases. `--head`, `--base` and `--repo` must match the quizzed branch, base and origin. |
+| `gh pr create`, `gh pr new` | Also after `cd`, `pushd`, subshells, `&&`, `;`, line continuations, redirections, env prefixes, `env`, `bash -c`, `command gh`, gh flags before the subcommand and gh aliases. With no `--base`, the base is the branch's `gh-merge-base` config, else the origin default branch. `--head`, `--base` and `--repo` must match the quizzed branch, base and origin. |
 | `gh pr ready` | Only without a PR number, so that it acts on the current branch. |
 | `glab mr create`, `az repos pr create`, `hub pull-request`, `tea pr create` | Head and base are checked. |
 | MCP tools named `*create_pull_request` or `*create_merge_request` | Head, base, owner and repo are checked. |

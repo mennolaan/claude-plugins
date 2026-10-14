@@ -40,6 +40,23 @@ for c in 'cd "$OTHER" && gh pr create --fill' 'cd - && gh pr create --fill' 'pop
 done
 hook pr-gate.sh "$(bash_in 'pushd sub && gh pr create --fill' "$REPO")"; expect_deny "pushd is tracked like cd" 'mode full'
 
+# Second review round: redirections, gh flag values before the action, combined
+# curl flags, and a harness self-test.
+for c in 'gh pr create>pr-url.txt --fill' '>pr-url.txt gh pr create --fill' 'gh pr create --fill 2>&1 | tee log' \
+         'gh pr --base main create --fill' 'gh pr --title x create' 'gh --repo acme/demo pr --base main create'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "redirect or flag value form: $c" 'mode full'
+done
+for c in 'curl -sX POST https://api.github.com/repos/acme/demo/pulls' 'curl -sd {} https://api.github.com/repos/acme/demo/pulls' \
+         'curl -s -d '"'"'{"title":"x","head":"feat"}'"'"' https://api.github.com/repos/acme/demo/pulls' 'gh api -iX POST repos/acme/demo/pulls'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "combined short flags: $c" 'raw API'
+done
+hook pr-gate.sh "$(bash_in 'curl -fsSL https://api.github.com/repos/acme/demo/pulls' "$REPO")"; expect_allow "curl GET with combined flags is allowed"
+hook pr-gate.sh "$(bash_in '{ git status; gh pr create --fill; }' "$REPO")"; expect_deny "a command group is still parsed" 'mode full'
+hook pr-gate.sh "$(bash_in "wget -qO- --post-data='{\"query\":\"mutation { createPullRequest(input: {}) { clientMutationId } }\"}' https://api.github.com/graphql" "$REPO")"
+expect_deny "a GraphQL createPullRequest through any program is denied" 'GraphQL mutation'
+selftest="$(OUT='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"mode full"}}'; RC=0; ERR=""; PASSED=0; FAILED=0; expect_deny probe 'mode full' >/dev/null; echo "$FAILED")"
+expect_true "expect_deny rejects an explicit allow decision" '[ "$selftest" = 1 ]'
+
 # Neighbours that create nothing are allowed.
 for c in 'gh pr view 3' 'gh pr list' 'gh pr checkout 3' 'gh api repos/acme/demo/pulls' 'git push -u origin feat' \
          'echo "gh pr create"' 'git commit -m "docs: explain gh pr create"' 'curl https://api.github.com/repos/acme/demo/pulls' \
@@ -85,6 +102,17 @@ hook pr-gate.sh "$(bash_in 'cd /tmp && cd - && gh pr create --fill' "$REPO")"; e
 OTHER="$(mk_repo)"
 hook pr-gate.sh "$(bash_in "cd ${OTHER} && gh pr create --fill" "$REPO")"; expect_deny "a pass in one repo does not cover cd into another" 'No quiz pass exists'
 hook pr-gate.sh "$(bash_in "pushd ${OTHER} && gh pr create --fill" "$REPO")"; expect_deny "a pass in one repo does not cover pushd into another" 'No quiz pass exists'
+hook pr-gate.sh "$(bash_in 'env GH_REPO=evil/fork gh pr create --fill' "$REPO")"; expect_deny "pass does not cover env GH_REPO=evil/fork" 'repo is evil/fork'
+hook pr-gate.sh "$(bash_in '(cd /tmp && ls); gh pr create --fill' "$REPO")"; expect_allow "a cd inside a subshell does not leak out (pass repo)"
+hook pr-gate.sh "$(bash_in "(cd ${REPO} && git status --short); gh pr create --fill" "$OTHER")"; expect_deny "a subshell cd into the pass repo does not lend its pass" 'No quiz pass exists'
+hook pr-gate.sh "$(bash_in 'gh pr create -R github.com/acme/demo --fill' "$REPO")"; expect_allow "pass allows -R HOST/OWNER/REPO with the origin host"
+hook pr-gate.sh "$(bash_in 'gh pr create -R gitlab.com/acme/demo --fill' "$REPO")"; expect_deny "pass does not cover another host" 'repo is gitlab.com/acme/demo'
+(cd "$REPO" && git config branch.feat.gh-merge-base develop)
+hook pr-gate.sh "$(bash_in 'gh pr create --fill' "$REPO")"; expect_deny "gh-merge-base config sets the base" 'base main.*base develop'
+(cd "$REPO" && git config --unset branch.feat.gh-merge-base)
+R6="$(mk_repo)"; REPO_SAVE="$REPO"; REPO="$R6"; pass_quiz; REPO="$REPO_SAVE"
+(cd "$R6" && git remote set-url origin https://other.example/acme/demo.git)
+hook pr-gate.sh "$(bash_in 'gh pr create --fill' "$R6")"; expect_deny "a new origin host voids the pass" 'quiz pass is for github.com/acme/demo'
 hook pr-gate.sh "$(tool_in mcp__github__create_pull_request '{"owner":"acme","repo":"demo","head":"other","base":"main"}' "$REPO")"
 expect_deny "pass does not cover MCP head other" 'head is other'
 hook pr-gate.sh "$(tool_in mcp__github__create_pull_request '{"owner":"evil","repo":"fork","head":"feat","base":"main"}' "$REPO")"

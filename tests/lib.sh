@@ -44,7 +44,7 @@ hook() {
 bash_in() { jq -cn --arg c "$1" --arg d "$2" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}'; }
 tool_in() { jq -cn --arg t "$1" --argjson i "$2" --arg d "$3" '{tool_name:$t,tool_input:$i,cwd:$d}'; }
 
-reason() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null; }
+reason() { printf '%s' "$OUT" | jq -r 'select(.hookSpecificOutput.permissionDecision == "deny") | .hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null; }
 context() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null; }
 
 expect_deny() { # <name> <regex in the reason>
