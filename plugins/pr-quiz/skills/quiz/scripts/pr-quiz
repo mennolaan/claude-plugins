@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# pr-quiz helper for the quiz skill. Run from inside the repo checkout.
+# Usage: pr-quiz start [--base <branch>]   scope, mode and question count
+#        pr-quiz diff                      the diff the questions must cover
+#        pr-quiz key < key.json            register the answer key of the next round
+#        pr-quiz status                    round and pass state
+#        pr-quiz reset                     drop the open round (a pass stays)
+# It never writes a pass: only the PostToolUse grader does.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../../hooks/_lib.sh
+. "${here}/../../../hooks/_lib.sh"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || fail "jq is not installed. Install jq, then run this again."
+git patch-id --verbatim </dev/null >/dev/null 2>&1 || fail "git 2.39 or later is needed (patch-id --verbatim)."
+prq_repo_ctx "$PWD" || fail "not inside a git checkout. cd into the repo of the PR branch."
+[ -n "$PRQ_BRANCH" ] || fail "HEAD is detached. Check out the PR branch."
+ROUND="${PRQ_STATE}/round.json"
+
+round_get() { jq -r "$1" "$ROUND"; }
+
+scope_diff_args() {
+  local base_ref mode from mb
+  base_ref="$(round_get .base_ref)"; mode="$(round_get .mode)"; from="$(round_get '.from // ""')"
+  mb="$(git merge-base "$base_ref" HEAD)"
+  if [ "$mode" = delta ]; then printf '%s\n' "$from" HEAD --; prq_scope_files "$base_ref" delta "$from"
+  else printf '%s\n' "$mb" HEAD
+  fi
+}
+
+cmd_start() {
+  local base="" base_ref mb
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) base="${2:-}"; shift 2 ;;
+      --base=*) base="${1#--base=}"; shift ;;
+      *) fail "unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$base" ] || base="$(prq_default_base)"
+  [ -n "$base" ] || fail "cannot find the default branch of origin. Run: pr-quiz start --base <branch>"
+  base_ref="$(prq_base_ref "$base")" || fail "base branch ${base} is not known here. Run: git fetch origin ${base}"
+  prq_need "$base"
+  if [ "$PRQ_NEED" = ok ]; then
+    printf 'PASS is valid for branch %s at %s (base %s). No quiz is needed.\n' "$PRQ_BRANCH" "${PRQ_HEAD:0:7}" "$base"
+    return 0
+  fi
+  mb="$(git merge-base "$base_ref" HEAD)" || fail "branch ${PRQ_BRANCH} has no merge base with ${base_ref}."
+  if [ -f "$ROUND" ] && [ "$(round_get .head)" = "$PRQ_HEAD" ] && [ "$(round_get .base)" = "$base" ] && [ "$(round_get .mode)" = "$PRQ_NEED" ]; then
+    printf 'Resuming the open quiz.\n'
+  else
+    [ -f "$ROUND" ] && printf 'The open round was for another HEAD, base or mode. It is replaced.\n'
+    rm -f "${PRQ_STATE}"/key-*.json
+    jq -n --arg branch "$PRQ_BRANCH" --arg repo "$PRQ_ORIGIN" --arg base "$base" --arg base_ref "$base_ref" \
+      --arg head "$PRQ_HEAD" --arg mode "$PRQ_NEED" --arg from "$PRQ_FROM" --argjson count "$PRQ_COUNT" \
+      '{branch:$branch, repo:$repo, base:$base, base_ref:$base_ref, head:$head, mode:$mode,
+        from:(if $from == "" then null else $from end), count:$count, round:1, status:"keyless",
+        required_topics:[], failed:[], asked:[], key_sha:"", results:{}, history:[]}' | prq_write_json "$ROUND" \
+      || fail "cannot write ${ROUND}"
+  fi
+  print_status
+  printf '\nWhy a quiz: %s\n' "$PRQ_WHY"
+  printf '\nCommits in scope:\n'
+  if [ "$PRQ_NEED" = delta ]; then git log --oneline "${PRQ_FROM}..HEAD"; else git log --oneline "${mb}..HEAD"; fi
+  printf '\nDiff stat:\n'
+  # shellcheck disable=SC2046  # one argument per line
+  git diff --stat $(scope_diff_args)
+  printf '\nFiles a question may cite as evidence:\n'
+  scope_files | sed 's/^/  /'
+  printf '\nNext: read the full diff with "%s diff", then register the key with "%s key".\n' "$0" "$0"
+}
+
+scope_files() { prq_scope_files "$(round_get .base_ref)" "$(round_get .mode)" "$(round_get '.from // ""')"; }
+
+print_status() {
+  [ -f "$ROUND" ] || { printf 'No open quiz round for branch %s.\n' "$PRQ_BRANCH"; return 0; }
+  jq -r '"Branch: \(.branch)  Base: \(.base) (\(.base_ref))  HEAD: \(.head[0:7])",
+    "Mode: \(.mode)\(if .from then " since \(.from[0:7])" else "" end)  Round: \(.round)  Status: \(.status)",
+    (if .status == "done" and (.failed | length) > 0 then
+       "Retry needed: round \(.round + 1) has one new question for each failed topic: \(.failed | join(", "))"
+     elif .round == 1 then "Questions required in round 1: \(.count)"
+     else "Questions required in round \(.round): \(.required_topics | length) (topics: \(.required_topics | join(", ")))" end),
+    (if (.results | length) > 0 then "Answered in this round: \(.results | length)" else empty end)' "$ROUND"
+}
+
+cmd_key() {
+  local key status n required topics errs files keyfile
+  [ -f "$ROUND" ] || fail "no open round. Run: $0 start"
+  key="$(cat)"
+  printf '%s' "$key" | jq -e 'type == "object"' >/dev/null 2>&1 || fail "the key on stdin is not a JSON object."
+  status="$(round_get .status)"; n="$(round_get .round)"
+  case "$status" in
+    asking) fail "round ${n} has started, so its key is frozen. Ask the remaining questions, or run: $0 reset" ;;
+    done)
+      [ "$(round_get '.failed | length')" -gt 0 ] || fail "round ${n} is complete with no failed topic."
+      n=$((n + 1)); topics="$(round_get '.failed')"; required="$(round_get '.failed | length')" ;;
+    keyless|keyed)
+      if [ "$n" = 1 ]; then topics='[]'; required="$(round_get .count)"; else topics="$(round_get '.required_topics')"; required="$(round_get '.required_topics | length')"; fi ;;
+    *) fail "round state ${status} is not known. Run: $0 reset" ;;
+  esac
+  files="$(scope_files | jq -R . | jq -s .)"
+  errs="$(printf '%s' "$key" | jq -r --arg idk "$PRQ_IDK" --argjson required "$required" --argjson topics "$topics" \
+    --argjson asked "$(round_get .asked)" --argjson files "$files" --argjson n "$n" '
+    def lc: ascii_downcase | gsub("^\\s+|\\s+$"; "");
+    def evpath: sub(":[0-9]+(-[0-9]+)?$"; "");
+    (.questions // null) as $qs
+    | if ($qs | type) != "array" then ["key: \"questions\" must be an array"] else
+      [ ($qs | length) as $len
+        | (if $len != $required then "key: round \($n) needs \($required) questions, got \($len)" else empty end),
+          (if $n == 1 then
+             (if ([$qs[].topic] | unique | length) != $len then "key: every round 1 question needs its own topic" else empty end)
+           else
+             (if ([$qs[].topic] | sort) != ($topics | sort) then "key: retry topics must be exactly the failed topics: \($topics | join(", "))" else empty end)
+           end),
+          (if ([$qs[].question] | unique | length) != $len then "key: question texts must be unique" else empty end),
+          (if $len >= 4 and ([$qs[] | . as $q | ($q.options // []) | index($q.correct)] | unique | length) == 1
+           then "key: the correct answer has the same position in every question. Shuffle the options." else empty end),
+          ( $qs | to_entries[] | .key as $i | .value as $q | "Q\($i + 1)" as $id
+            | (if ($q.topic | type) != "string" or ($q.topic | lc) == "" then "\($id): topic is missing" else empty end),
+              (if ($q.question | type) != "string" or ($q.question | lc) == "" then "\($id): question is missing" else empty end),
+              (if ($q.question | type) == "string" and ($asked | index($q.question)) != null then "\($id): this question was asked in an earlier round. Write a new one." else empty end),
+              (if ($q.options | type) != "array" or ($q.options | length) != 3 then "\($id): options must be exactly 3 answers (the IDK option is added when asking)"
+               else
+                 (if ([$q.options[] | select(type != "string" or lc == "")] | length) > 0 then "\($id): every option must be a non-empty string" else empty end),
+                 (if ([$q.options[] | strings | lc] | unique | length) != 3 then "\($id): options must be different" else empty end),
+                 (if ([$q.options[] | strings | lc] | map(select(. == ($idk | lc) or . == "other")) | length) > 0 then "\($id): an option may not be \"\($idk)\" or \"Other\"" else empty end),
+                 (if ($q.options | index($q.correct)) == null then "\($id): correct must equal one of the options exactly" else empty end)
+               end),
+              (if ($q.evidence | type) != "string" or ($files | index($q.evidence | evpath)) == null then "\($id): evidence must be path or path:line of a file in the diff (got \($q.evidence // "nothing"))" else empty end),
+              (if ($q.explanation | type) != "string" or ($q.explanation | lc) == "" then "\($id): explanation is missing" else empty end)
+          )
+      ] end | .[]')" || fail "cannot validate the key (jq error)."
+  if [ -n "$errs" ]; then printf 'FAIL: the key is not registered:\n%s\n' "$errs" >&2; exit 1; fi
+  keyfile="${PRQ_STATE}/key-${n}.json"
+  printf '%s' "$key" | jq --argjson n "$n" '{round:$n, questions:[.questions[] | {topic, question, options, correct, evidence, explanation}]}' \
+    | prq_write_json "$keyfile" || fail "cannot write ${keyfile}"
+  jq --argjson n "$n" --argjson topics "$topics" '
+      if .status == "done" then .round = $n | .required_topics = $topics | .results = {} | .failed = [] else . end
+      | .status = "keyed" | .key_sha = ""' "$ROUND" | prq_write_json "$ROUND" || fail "cannot update ${ROUND}"
+  jq -r '"registered round \(.round): \(.questions | length) questions (topics: \([.questions[].topic] | join(", ")))"' "$keyfile"
+}
+
+cmd_reset() {
+  rm -f "$ROUND" "${PRQ_STATE}"/key-*.json
+  printf 'The open quiz round for branch %s is dropped. A pass, if any, stays.\n' "$PRQ_BRANCH"
+}
+
+cmd_status() {
+  print_status
+  if [ -f "${PRQ_STATE}/pass.json" ]; then
+    jq -r '"Pass: branch \(.branch) at \(.head[0:7]), base \(.base), \(.rounds) round(s), \(.at)"' "${PRQ_STATE}/pass.json"
+  else
+    printf 'Pass: none for branch %s.\n' "$PRQ_BRANCH"
+  fi
+}
+
+cmd_diff() {
+  [ -f "$ROUND" ] || fail "no open round. Run: $0 start"
+  # shellcheck disable=SC2046  # one argument per line
+  git diff --no-color --no-ext-diff $(scope_diff_args)
+}
+
+sub="${1:-}"; [ $# -gt 0 ] && shift
+case "$sub" in
+  start) cmd_start "$@" ;;
+  key) cmd_key ;;
+  diff) cmd_diff ;;
+  status) cmd_status ;;
+  reset) cmd_reset ;;
+  *) sed -n '2,8p' "$0"; exit 2 ;;
+esac
