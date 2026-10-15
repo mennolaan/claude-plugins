@@ -8,7 +8,7 @@
     {
       "name": "pr-quiz",
       "source": "./plugins/pr-quiz",
-      "description": "Blocks Claude from opening a pull request until you pass a multiple-choice quiz about the branch diff."
+      "description": "Blocks Claude from opening a pull request until you pass a multiple-choice quiz about the branch diff. An optional merge check (GitHub, Azure DevOps) also blocks the merge of a PR opened outside Claude."
     }
   ]
 }

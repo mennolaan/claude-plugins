@@ -4,7 +4,7 @@ Claude Code plugins by Menno Laan.
 
 | Plugin | What it does |
 |---|---|
-| [pr-quiz](plugins/pr-quiz/README.md) | Blocks Claude from opening a pull request until you pass a multiple-choice quiz about the branch. Hooks grade your real answers. |
+| [pr-quiz](plugins/pr-quiz/README.md) | Blocks Claude from opening a pull request until you pass a multiple-choice quiz about the branch. Hooks grade your real answers. An optional merge check blocks the merge of a PR opened outside Claude, on GitHub and Azure DevOps. |
 
 ## Install
 
