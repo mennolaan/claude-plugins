@@ -39,6 +39,78 @@ prq_read_input() { PRQ_IN="$(cat)"; }
 # prq_field <jq filter>: one raw value from the hook input, empty when null.
 prq_field() { printf '%s' "${PRQ_IN}" | jq -r "($1) // empty"; }
 
+# split_words <segment>: sets WORDS to the shell words of one segment, with the
+# quotes and backslashes removed. A quoted value with spaces stays one word.
+split_words() {
+  local s="$1" w="" c q="" i n have=0 tab=$'\t'
+  WORDS=()
+  case "$s" in
+    *[\"\'\\]*) ;;
+    *) read -r -a WORDS <<< "$s" || true; return 0 ;;
+  esac
+  n=${#s}
+  for ((i = 0; i < n; i++)); do
+    c="${s:i:1}"
+    if [ -n "$q" ]; then
+      if [ "$c" = "$q" ]; then q=""
+      elif [ "$q" = '"' ] && [ "$c" = '\' ] && [ $((i + 1)) -lt "$n" ]; then i=$((i + 1)); w="${w}${s:i:1}"
+      else w="${w}${c}"; fi
+      continue
+    fi
+    case "$c" in
+      '"'|"'") q="$c"; have=1 ;;
+      '\') i=$((i + 1)); w="${w}${s:i:1}"; have=1 ;;
+      ' '|"$tab") [ "$have" = 1 ] && WORDS+=("$w"); w=""; have=0 ;;
+      *) w="${w}${c}"; have=1 ;;
+    esac
+  done
+  [ "$have" = 1 ] && WORDS+=("$w")
+  return 0
+}
+
+# quoted_segments <command>: the segments of a command, split at unquoted ; & |
+# ` ( ) and newlines, each followed by \036. "(" and ")" become marker segments.
+# Unquoted redirections (2>&1, > file, <<'EOF') and their targets are dropped.
+quoted_segments() {
+  local s="$1" seg="" c q="" i=0 n t rs=$'\036' nl=$'\n' tab=$'\t'
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:i:1}"
+    if [ -n "$q" ]; then
+      seg="${seg}${c}"
+      if [ "$c" = "$q" ]; then q=""
+      elif [ "$q" = '"' ] && [ "$c" = '\' ]; then i=$((i + 1)); seg="${seg}${s:i:1}"; fi
+      i=$((i + 1)); continue
+    fi
+    case "$c" in
+      '"'|"'") q="$c"; seg="${seg}${c}" ;;
+      '\') i=$((i + 1)); seg="${seg}${c}${s:i:1}" ;;
+      '<'|'>')
+        t="$seg"
+        while case "$t" in *[0-9]) true ;; *) false ;; esac; do t="${t%?}"; done
+        case "$t" in ""|*" "|*"$tab") seg="$t" ;; esac
+        while [ "$i" -lt "$n" ]; do case "${s:i:1}" in '<'|'>'|'&'|'|'|'-') i=$((i + 1)) ;; *) break ;; esac; done
+        while [ "$i" -lt "$n" ]; do case "${s:i:1}" in ' '|"$tab") i=$((i + 1)) ;; *) break ;; esac; done
+        while [ "$i" -lt "$n" ]; do
+          c="${s:i:1}"
+          if [ -n "$q" ]; then [ "$c" = "$q" ] && q=""; i=$((i + 1)); continue; fi
+          case "$c" in
+            '"'|"'") q="$c" ;;
+            ' '|"$tab"|';'|'&'|'|'|'`'|'('|')'|'<'|'>'|"$nl") break ;;
+          esac
+          i=$((i + 1))
+        done
+        seg="${seg} "; continue ;;
+      ';'|'&'|'|'|'`'|"$nl") printf '%s%s' "$seg" "$rs"; seg="" ;;
+      '(') printf '%s%s__PRQ_OPEN__%s' "$seg" "$rs" "$rs"; seg="" ;;
+      ')') printf '%s%s__PRQ_CLOSE__%s' "$seg" "$rs" "$rs"; seg="" ;;
+      *) seg="${seg}${c}" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s%s' "$seg" "$rs"
+}
+
 # Repo context --------------------------------------------------------------
 
 # prq_norm_repo <url | OWNER/REPO | HOST/OWNER/REPO>: prints lowercase
@@ -60,6 +132,60 @@ prq_same_repo() {
   case "${a%%/*}" in *.*) a="${a#*/}" ;; esac
   case "${b%%/*}" in *.*) b="${b#*/}" ;; esac
   [ "$a" = "$b" ]
+}
+
+# prq_urldecode <text>: decodes %XX escapes.
+prq_urldecode() {
+  local s="$1" out="" pre hex
+  while :; do
+    case "$s" in *%[0-9A-Fa-f][0-9A-Fa-f]*) ;; *) break ;; esac
+    pre="${s%%\%[0-9A-Fa-f][0-9A-Fa-f]*}"
+    hex="${s:${#pre}+1:2}"
+    s="${s:${#pre}+3}"
+    # shellcheck disable=SC2059  # the format is the octal escape
+    out="${out}${pre}$(printf "\\$(printf '%03o' "0x${hex}")")"
+  done
+  printf '%s' "${out}${s}"
+}
+
+# prq_ado_parse <remote url>: for an Azure DevOps remote, sets PRQ_ADO_BASE (REST
+# base up to the project), PRQ_ADO_ORG, PRQ_ADO_PROJECT and PRQ_ADO_REPO (decoded)
+# and PRQ_ADO_REPO_ENC (for URL paths). Returns 1 for any other remote. Sets
+# PRQ_ADO_ERR for an Azure DevOps remote that has no REST mapping.
+prq_ado_parse() {
+  local u="$1" scheme host path org proj repo
+  PRQ_ADO_ERR=""
+  u="${u%/}"; u="${u%.git}"
+  case "$u" in
+    git@ssh.dev.azure.com:v3/*|*@vs-ssh.visualstudio.com:v3/*|ssh://*ssh.dev.azure.com*/v3/*|ssh://*vs-ssh.visualstudio.com*/v3/*)
+      path="${u#*v3/}"
+      org="${path%%/*}"; path="${path#*/}"; proj="${path%%/*}"; repo="${path#*/}"
+      PRQ_ADO_BASE="https://dev.azure.com/${org}/${proj}"
+      ;;
+    https://*/_git/*|http://*/_git/*)
+      scheme="${u%%://*}"
+      host="${u#*://}"; host="${host#*@}"; path="${host#*/}"; host="${host%%/*}"
+      repo="${path##*/_git/}"; path="${path%%/_git/*}"
+      case "$host" in
+        dev.azure.com) org="${path%%/*}"; proj="${path#*/}" ;;
+        *.visualstudio.com) org="${host%%.*}"; proj="${path##*/}" ;;
+        *) org="${host}/${path%/*}"; proj="${path##*/}" ;;
+      esac
+      PRQ_ADO_BASE="${scheme}://${host}/${path}"
+      ;;
+    *)
+      case "$u" in
+        *dev.azure.com*|*visualstudio.com*|*/_git/*) PRQ_ADO_ERR="origin ${1} is an Azure DevOps remote that pr-quiz cannot map to the REST API. Use an https remote." ;;
+      esac
+      return 1
+      ;;
+  esac
+  case "$repo" in */*|"") PRQ_ADO_ERR="cannot read the repo name from origin ${1}."; return 1 ;; esac
+  PRQ_ADO_BASE="${PRQ_ADO_BASE// /%20}"
+  PRQ_ADO_REPO_ENC="${repo// /%20}"
+  PRQ_ADO_ORG="$(prq_urldecode "$org")"
+  PRQ_ADO_PROJECT="$(prq_urldecode "$proj")"
+  PRQ_ADO_REPO="$(prq_urldecode "$repo")"
 }
 
 # prq_repo_ctx <dir>: cd into the repo and set PRQ_TOP, PRQ_GITDIR, PRQ_BRANCH,
