@@ -49,17 +49,20 @@ expect_true "first quiz call freezes the key" 'helper key < "$k" | grep -q "key 
 
 # grading: progress, then one failure of each kind in its own round ---------
 hook quiz-post.sh "$(post_json "$ask" "$(correct_answers "$k" 1 4)")"; expect_ctx "partial round reports progress only" 'progress: 4 of 10'
-expect_true "progress shows the developer no message" '[ -z "$(sysmsg)" ]'
+expect_sysmsg "progress shows the developer the result of the call" 'questions 1 to 4: 4 of 4 correct\.'
+expect_true "an all-correct call lists nothing wrong" '! sysmsg | grep -q "Wrong:"'
 hook quiz-pre.sh "$(pre_json "$ask")"; expect_deny "an answered question cannot be asked again" 'already answered'
 ask_and_answer "$k" 5 8 "$(correct_answers "$k" 5 8)"
 # question 9 wrong, question 10 correct
 ans="$(correct_answers "$k" 9 10 | jq -c --arg q "$(jq -r '.questions[8].question' "$k")" --arg w "$(jq -r '.questions[8] | (.options - [.correct])[0]' "$k")" '.[$q] = $w')"
 ask_and_answer "$k" 9 10 "$ans"
 expect_ctx "a wrong answer fails its topic" 'round 1 result: 9 of 10 correct. Failed topics: t9'
-expect_true "a failed round does not celebrate" '[ -z "$(sysmsg)" ]'
-expect_ctx "the report gives the developer answer" 'Developer answer: Alpha Question 9'
-expect_ctx "the report gives the correct answer" 'Correct answer: Gamma Question 9'
-expect_ctx "the report gives the explanation and evidence" 'Evidence: app.py:5'
+expect_true "a failed round does not celebrate" '! sysmsg | grep -q "PR quiz passed"'
+expect_sysmsg "the developer sees which question was wrong" 'Wrong: Q9 "Question 9'
+expect_true "a wrong answer shows nobody the correct answer" '! printf "%s" "$OUT" | grep -q "Gamma Question 9"'
+expect_sysmsg "the round summary names the failed questions" 'Round 1 result: 9 of 10 correct\. Failed: Q9\. Next: round 2 with 1 new question'
+expect_ctx "Claude asks if the developer is ready for the next round" 'ready for round 2 with 1 new question'
+expect_true "the wrong answer is kept for the recap" '[ "$(jq -r ".wrong_log[0].label" "$(state_dir)/round.json")" = Q9 ]'
 expect_true "a failed round writes no pass" '! has_pass'
 
 # fail_round <name> <question index> <answer jq value or null> [extra tool_response] [verdict regex]
@@ -71,19 +74,22 @@ fail_round() {
   o="$(correct_answers "$k" 9 10 | jq -c --arg q "$(jq -r ".questions[$(($2 - 1))].question" "$k")" --argjson v "$3" 'if $v == null then del(.[$q]) else .[$q] = $v end')"
   ask_and_answer "$k" 9 10 "$o" "${4:-}"
   expect_ctx "$1 fails its topic" "9 of 10 correct. Failed topics: t$2"
-  [ -z "${5:-}" ] || expect_ctx "$1 is reported as such" "$5"
+  [ -z "${5:-}" ] || expect_out "$1 is reported as such" "$5"
   expect_true "$1 writes no pass" '! has_pass'
 }
 fail_round "\"I don't know\"" 10 "\"$IDK\"" "" "I don't know \\(explain the whole topic\\)"
+expect_sysmsg "an I don't know answer is explained to the developer at once" 'Explained: Q10 "Question 10'
+expect_sysmsg "the explanation gives the correct answer" 'Correct answer: Alpha Question 10'
 fail_round "an Other free-text answer" 10 '"something I typed"' "" 'free text: something I typed'
-fail_round "a missing answer" 10 null "" 'Developer answer: none'
-fail_round "an empty answer" 9 '""' "" 'Developer answer: none'
+expect_sysmsg "a free-text answer is explained like I don't know" 'Explained: Q10 .*Your answer: free text: something I typed'
+fail_round "a missing answer" 10 null "" 'No answer, so wrong: Q10\.'
+fail_round "an empty answer" 9 '""' "" 'No answer, so wrong: Q9\.'
 REPO="$(mk_repo)"; helper start >/dev/null; make_key 10 > "$k"; helper key < "$k" >/dev/null
 ask_and_answer "$k" 1 4 "$(correct_answers "$k" 1 4)"
 ask_and_answer "$k" 5 8 "$(correct_answers "$k" 5 8)" '{"afkTimeoutMs":60000}'
+expect_sysmsg "a timeout is reported as such" 'Q5 \(the question timed out\)'
 ask_and_answer "$k" 9 10 "$(correct_answers "$k" 9 10)"
 expect_ctx "an idle timeout fails every question of that call" '6 of 10 correct. Failed topics: t5, t6, t7, t8'
-expect_ctx "a timeout is reported as such" 'question timed out'
 REPO="$(mk_repo)"; helper start >/dev/null; make_key 10 > "$k"; helper key < "$k" >/dev/null
 ask_and_answer "$k" 1 4 "$(correct_answers "$k" 1 4)"
 ask_and_answer "$k" 5 8 "$(correct_answers "$k" 5 8)"
@@ -93,9 +99,13 @@ expect_ctx "a follow-up instead of an answer fails" '8 of 10 correct. Failed top
 # retry round ---------------------------------------------------------------
 REPO="$(mk_repo)"; helper start >/dev/null; make_key 10 > "$k"; helper key < "$k" >/dev/null
 ask_and_answer "$k" 1 4 "$(correct_answers "$k" 1 4 | jq -c --arg q "$(jq -r '.questions[1].question' "$k")" --arg i "$IDK" '.[$q] = $i')"
+expect_ctx "an I don't know answer mid-round is progress, not a result" 'progress: 4 of 10'
+expect_sysmsg "an I don't know answer mid-round is explained before the next call" 'Explained: Q2 "Question 2.*Correct answer: Beta Question 2'
+expect_ctx "Claude explains the I don't know topic before the next call" 'Explain now:.*Q2 \[t2\]'
 ask_and_answer "$k" 5 8 "$(correct_answers "$k" 5 8)"
-ask_and_answer "$k" 9 10 "$(correct_answers "$k" 9 10 | jq -c --arg q "$(jq -r '.questions[9].question' "$k")" '.[$q] = "typed"')"
+ask_and_answer "$k" 9 10 "$(correct_answers "$k" 9 10 | jq -c --arg q "$(jq -r '.questions[9].question' "$k")" '.[$q] = "Beta Question 10"')"
 expect_ctx "round 1 fails t2 and t10" 'Failed topics: t10, t2'
+expect_sysmsg "the round summary counts both failed questions" 'Failed: Q2, Q10\. Next: round 2 with 2 new question'
 out="$(helper start)"
 expect_true "start announces the retry round" 'printf "%s" "$out" | grep -q "Retry needed: round 2.*t10, t2"'
 make_key 2 Retry '["t2","t3"]' > "$k2"
@@ -109,9 +119,16 @@ ask_and_answer "$k2" 1 2 "$(correct_answers "$k2" 1 2)" "" "R2 "
 expect_ctx "an all-correct retry round passes" 'PASS. Round 2: 2 of 2 correct'
 expect_ctx "the pass tells Claude the score history" 'Scores: round 1 8/10, round 2 2/2'
 expect_sysmsg "the pass celebrates to the developer directly" 'PR quiz passed! feat at [0-9a-f]{7}\. Scores: round 1 8/10, round 2 2/2\. The PR gate is open'
+expect_sysmsg "the pass gives the recap of a wrong answer" 'Recap of the questions you answered wrong:'
+expect_sysmsg "the recap gives the correct answer of the wrong question" 'Q10 "Question 10.*Your answer: Beta Question 10.*Correct answer: Alpha Question 10'
+expect_true "the recap leaves out the question that was already explained" '! sysmsg | sed -n "/^Recap of the questions/,\$p" | grep -q "^Q2 "'
+expect_ctx "Claude walks through the recap" 'explain each question in the recap'
 expect_true "the pass is written" has_pass
 expect_true "the pass records 2 rounds" '[ "$(jq -r .rounds "$(state_dir)/pass.json")" = 2 ]'
 expect_true "start after a pass needs no quiz" 'helper start | grep -q "No quiz is needed"'
+expect_true "reset keeps the pass" 'helper reset | grep -q "A pass, if any, stays" && has_pass'
+expect_true "reset --all drops the pass" 'helper reset --all | grep -q "the pass for branch feat are dropped" && ! has_pass'
+expect_true "start after reset --all is a full quiz" 'helper start | grep -q "required in round 1: 10"'
 
 # key freeze and HEAD moves -------------------------------------------------
 REPO="$(mk_repo)"; helper start >/dev/null; make_key 10 > "$k"; helper key < "$k" >/dev/null

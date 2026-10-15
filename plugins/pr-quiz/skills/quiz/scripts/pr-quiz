@@ -4,7 +4,7 @@
 #        pr-quiz diff                      the diff the questions must cover
 #        pr-quiz key < key.json            register the answer key of the next round
 #        pr-quiz status                    round and pass state
-#        pr-quiz reset                     drop the open round (a pass stays)
+#        pr-quiz reset [--all]             drop the open round; --all drops the pass too
 # It never writes a pass: only the PostToolUse grader does.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,23 +143,14 @@ cmd_key() {
 }
 
 cmd_reset() {
-  rm -f "$ROUND" "${PRQ_STATE}"/key-*.json
-  printf 'The open quiz round for branch %s is dropped. A pass, if any, stays.\n' "$PRQ_BRANCH"
-}
-
-cmd_status() {
-  print_status
-  if [ -f "${PRQ_STATE}/pass.json" ]; then
-    jq -r '"Pass: branch \(.branch) at \(.head[0:7]), base \(.base), \(.rounds) round(s), \(.at)"' "${PRQ_STATE}/pass.json"
-  else
-    printf 'Pass: none for branch %s.\n' "$PRQ_BRANCH"
-  fi
-}
-
-cmd_diff() {
-  [ -f "$ROUND" ] || fail "no open round. Run: $0 start"
-  # shellcheck disable=SC2046  # one argument per line
-  git diff --no-color --no-ext-diff $(scope_diff_args)
+  case "${1:-}" in
+    "") rm -f "$ROUND" "${PRQ_STATE}"/key-*.json
+        printf 'The open quiz round for branch %s is dropped. A pass, if any, stays. Use reset --all to start a full quiz again.\n' "$PRQ_BRANCH" ;;
+    --all)
+      rm -f "$ROUND" "${PRQ_STATE}"/key-*.json "${PRQ_STATE}/pass.json"
+      printf 'The quiz round and the pass for branch %s are dropped. Run start for a full quiz.\n' "$PRQ_BRANCH" ;;
+    *) fail "unknown argument: $1. Use: reset [--all]" ;;
+  esac
 }
 
 sub="${1:-}"; [ $# -gt 0 ] && shift
@@ -168,6 +159,6 @@ case "$sub" in
   key) cmd_key ;;
   diff) cmd_diff ;;
   status) cmd_status ;;
-  reset) cmd_reset ;;
+  reset) cmd_reset "$@" ;;
   *) sed -n '2,8p' "$0"; exit 2 ;;
 esac

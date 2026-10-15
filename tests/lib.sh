@@ -57,13 +57,16 @@ expect_deny() { # <name> <regex in the reason>
 expect_allow() { # <name>
   if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok "$1"; else bad "$1" "want allow (no output), got rc=$RC out=$OUT err=$ERR"; fi
 }
-expect_ctx() { # <name> <regex in the additional context>
-  local c; c="$(context)"
+expect_ctx() { # <name> <regex in the additional context, newlines read as spaces>
+  local c; c="$(context | tr '\n' ' ')"
   if [ "$RC" = 0 ] && printf '%s' "$c" | grep -Eq -- "$2"; then ok "$1"; else bad "$1" "want context matching /$2/, got rc=$RC out=$OUT err=$ERR"; fi
 }
-expect_sysmsg() { # <name> <regex in the message shown to the developer>
-  local m; m="$(sysmsg)"
+expect_sysmsg() { # <name> <regex in the message shown to the developer, newlines read as spaces>
+  local m; m="$(sysmsg | tr '\n' ' ')"
   if [ "$RC" = 0 ] && printf '%s' "$m" | grep -Eq -- "$2"; then ok "$1"; else bad "$1" "want systemMessage matching /$2/, got rc=$RC out=$OUT"; fi
+}
+expect_out() { # <name> <regex anywhere in the hook output>
+  if [ "$RC" = 0 ] && printf '%s' "$OUT" | grep -Eq -- "$2"; then ok "$1"; else bad "$1" "want output matching /$2/, got rc=$RC out=$OUT err=$ERR"; fi
 }
 expect_true() { if (set +o pipefail; eval "$2"); then ok "$1"; else bad "$1" "condition false: $2"; fi; }
 

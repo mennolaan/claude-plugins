@@ -20,12 +20,11 @@ The helper is `"${CLAUDE_SKILL_DIR}/scripts/pr-quiz"`. Run it from inside the re
    - `header`: `Q<i>/<total>` in round 1, for example `Q3/10`. In retry round N: `R<N> Q<i>/<total>`, for example `R2 Q1/3`.
    - `options`: the 3 key options in key order, then the option `I don't know, explain this to me` as the last one. Every `description` is an empty string.
    - `multiSelect`: false.
-6. After each call, read the hook message. Until the round is complete, do not tell the developer whether an answer was correct.
-7. When the round is complete, the hook gives the score and every failed question with its correct answer, explanation and evidence. Do what the hook message says:
-   - Show the score.
-   - Explain every failed question. Give the correct answer, the reason, and the code at the evidence path:line. For "I don't know", explain the whole topic from the code.
-   - Ask whether to retry now. On yes, start the retry round at step 1.
-8. When the hook reports PASS, tell the developer, then run the blocked PR command again.
+6. After each call, the hook shows the developer the result of that call: how many answers were wrong and which questions, without the correct answer. It explains every "I don't know" or free-text answer at once. Before you ask the next call, do what the hook message says:
+   - For each question under "Explain now", explain the topic from the code: the correct answer, why it is correct, and the code at the evidence path:line.
+   - Never give the correct answer of a wrong question, or of a question without an answer. The developer gets a new question on that topic, and the answer comes in the recap after the pass.
+7. When the round is complete with failed questions, do what the hook message says: explain the "Explain now" questions, then ask with AskUserQuestion (a normal question with the header `Next round`) whether the developer is ready for the next round. The next round has exactly one new question for each failed question. On yes, start the retry round at step 1.
+8. When the hook reports PASS, tell the developer the scores. Then explain each question in the recap from the code at its evidence path:line. Then run the blocked PR command again.
 
 ## Writing good questions
 
@@ -63,5 +62,6 @@ The helper is `"${CLAUDE_SKILL_DIR}/scripts/pr-quiz"`. Run it from inside the re
 
 - Never answer a quiz question for the developer, and never put answers in the AskUserQuestion call.
 - Never read, write or delete files under the git directory's `pr-quiz` folder. Use `pr-quiz status` and `pr-quiz reset`.
+- `pr-quiz reset` drops the open round and keeps a pass. When the developer asks to restart the quiz, run `pr-quiz reset --all`: it drops the pass too, then `pr-quiz start` begins a full quiz.
 - If the developer stops the quiz, the PR gate stays closed. Say so, and stop.
 - If HEAD changes during the quiz, run `pr-quiz start` again. The open round is replaced.
