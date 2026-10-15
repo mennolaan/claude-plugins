@@ -148,6 +148,93 @@ REPO="$R2"; pass_quiz
 (cd "$R2" && sed -i.bak 's/^d()$/    d()/' app.py && rm -f app.py.bak && git commit -q --amend -am "feat: return 2, add guard")
 hook pr-gate.sh "$(bash_in 'gh pr create --fill' "$R2")"; expect_deny "whitespace-only behavior change voids the pass" 'history changed.*mode full'
 
+# 0.3.0: quoted words, raw API paths, status writes, policy skips and Azure DevOps targets.
+REPO_MAIN="$REPO"; REPO="$(mk_repo)"; mkdir -p "${REPO}/dir with space"
+hook pr-gate.sh "$(bash_in 'cd "dir with space" && gh pr create --fill' "$REPO")"; expect_deny "a quoted cd path with spaces resolves" 'mode full'
+hook pr-gate.sh "$(bash_in "cd '${REPO}/dir with space' && gh pr create --fill" "$REPO")"; expect_deny "a single-quoted absolute path with spaces resolves" 'mode full'
+for c in 'sh -c "cd /tmp && gh pr create --fill"' 'eval "gh pr create --fill"' 'nohup bash -c "gh pr new"'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "a quoted command string is parsed: $c" 'mode full|cannot tell which checkout|outside a git checkout'
+done
+hook pr-gate.sh "$(bash_in 'git commit -m "gh pr create later"' "$REPO")"; expect_allow "a quoted message that names a PR command is allowed"
+for c in 'curl -X POST api.github.com/repos/acme/demo/pulls -d {}' 'curl -X POST https://api.github.com/ --request-target /repos/acme/demo/pulls -d {}' \
+         'wget --post-data={} https://api.github.com/repos/acme/demo/pulls' 'az devops invoke --area git --resource pullRequests --http-method POST --in-file pr.json' \
+         'az rest --method post --uri https://dev.azure.com/acme/p/_apis/git/repositories/r/pullrequests?api-version=7.1 --body {}'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "raw API denied: $c" 'raw API'
+done
+for c in 'gh api repos/acme/demo/statuses/abc -f state=success -f context=pr-quiz/merge-check' 'gh api -X POST repos/acme/demo/statuses/abc --input s.json' \
+         'hub api repos/acme/demo/statuses/abc -f state=success' 'curl -X POST https://api.github.com/repos/acme/demo/statuses/abc -d {}' \
+         'curl -sX POST api.github.com/repos/acme/demo/statuses/abc' \
+         'curl -X POST https://dev.azure.com/ --request-target /acme/p/_apis/git/repositories/r/pullRequests/1/statuses?api-version=7.1 -d {}' \
+         'curl -X PATCH https://dev.azure.com/acme/p/_apis/git/repositories/r/pullRequests/1/statuses?api-version=7.1 -d []' \
+         'wget --post-data={} https://dev.azure.com/acme/p/_apis/git/repositories/r/pullRequests/1/statuses' \
+         'az devops invoke --area git --resource pullRequestStatuses --route-parameters project=p --http-method POST --in-file s.json' \
+         'az rest --method post --uri https://dev.azure.com/acme/p/_apis/git/repositories/r/pullRequests/1/statuses?api-version=7.1 --body {}'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "status write denied: $c" 'writes a commit or pull request status'
+done
+hook pr-gate.sh "$(tool_in mcp__gh__create_commit_status '{"owner":"acme","repo":"demo","sha":"abc","state":"success"}' "$REPO")"; expect_deny "MCP status tool denied" 'writes a commit or pull request status'
+for c in 'gh api repos/acme/demo/statuses/abc' 'gh api repos/acme/demo/commits/abc/statuses' 'curl https://api.github.com/repos/acme/demo/statuses/abc' \
+         'az rest --method get --uri https://dev.azure.com/acme/p/_apis/git/repositories/r/pullRequests/1/statuses'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_allow "status read allowed: $c"
+done
+for c in 'gh pr merge 5 --admin' 'gh pr merge --admin --squash' 'az repos pr update --id 5 --bypass-policy true --bypass-policy-reason x' \
+         'az repos pr update --id 5 --bypass-policy=true' 'az repos pr create --bypass-policy true --title x'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_deny "policy skip denied: $c" 'skips the branch rules or policies'
+done
+for c in 'gh pr merge 5 --squash' 'az repos pr update --id 5 --bypass-policy false' 'az repos pr update --id 5 --status completed'; do
+  hook pr-gate.sh "$(bash_in "$c" "$REPO")"; expect_allow "merge without a policy skip allowed: $c"
+done
+hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write '{"action":"update","pullRequestId":5,"bypassPolicy":true,"bypassReason":"x"}' "$REPO")"; expect_deny "MCP update with bypassPolicy denied" 'skips the branch rules or policies'
+hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write '{"action":"update","pullRequestId":5,"autoComplete":true}' "$REPO")"; expect_allow "MCP update without bypassPolicy allowed"
+hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write '{"action":"vote","pullRequestId":5,"vote":"Approved"}' "$REPO")"; expect_allow "MCP vote allowed"
+hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write '{"action":"create","repositoryId":"demo","sourceRefName":"refs/heads/feat","targetRefName":"refs/heads/main","title":"x"}' "$REPO")"
+expect_deny "Azure DevOps MCP create against a GitHub origin" 'not an Azure DevOps https remote'
+hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write '{"action":"create","sourceRefName":"refs/heads/feat","targetRefName":"refs/heads/main","title":"x"}' "$REPO")"
+expect_deny "Azure DevOps MCP create without a pass" 'mode full'
+
+REPO="$(mk_repo)"; (cd "$REPO" && git remote set-url origin "https://acme@dev.azure.com/acme/My%20Project/_git/My%20Repo"); pass_quiz
+mcp_ado() { hook pr-gate.sh "$(tool_in mcp__ado__repo_pull_request_write "$(jq -cn --arg r "$1" --arg p "$2" '{action:"create",repositoryId:$r,project:$p,sourceRefName:"refs/heads/feat",targetRefName:"refs/heads/main",title:"x"}')" "$REPO")"; }
+mcp_ado "My Repo" "my project"; expect_allow "Azure DevOps MCP create by repo name with a pass"
+mcp_ado "Other Repo" "My Project"; expect_deny "Azure DevOps MCP create to another repo" 'targets repository Other Repo, but origin is My Repo'
+mcp_ado "11111111-2222-3333-4444-555555555555" "My Project"; expect_deny "Azure DevOps MCP create by GUID" 'by GUID'
+mcp_ado "My Repo" "Else"; expect_deny "Azure DevOps MCP create to another project" 'targets project Else'
+hook pr-gate.sh "$(bash_in 'az repos pr create --repository "My Repo" --project "My Project" --org https://dev.azure.com/acme/ --source-branch feat --target-branch main --title "a b"' "$REPO")"
+expect_allow "az repos pr create with quoted names and a pass"
+hook pr-gate.sh "$(bash_in 'az repos pr create --repository Other --title x' "$REPO")"; expect_deny "az repos pr create to another repo" 'targets repository Other'
+hook pr-gate.sh "$(bash_in 'az repos pr create --org https://dev.azure.com/evil --title x' "$REPO")"; expect_deny "az repos pr create to another organization" 'targets organization'
+hook pr-gate.sh "$(bash_in 'az repos pr create --org https://acme.visualstudio.com --title x' "$REPO")"; expect_allow "az repos pr create with the visualstudio.com form of the origin organization"
+hook pr-gate.sh "$(bash_in 'az repos pr create --title "fix (edge case)" --bypass-policy true' "$REPO")"; expect_deny "a quoted ( cannot hide --bypass-policy" 'skips the branch rules or policies'
+hook pr-gate.sh "$(bash_in 'az repos pr create --title "a; b" --repository Other' "$REPO")"; expect_deny "a quoted ; cannot hide --repository" 'targets repository Other'
+
+# Codex code review round 3: quoted separators, eval, shell -c, wrapped text, GET.
+REPO="$(mk_repo)"; pass_quiz; OTHER="$(mk_repo)"
+hook pr-gate.sh "$(bash_in 'gh pr create --title "a; b" --base other' "$REPO")"; expect_deny "a quoted ; cannot hide --base" 'other'
+hook pr-gate.sh "$(bash_in 'gh pr create --title "fix (edge case)" --repo evil/fork' "$REPO")"; expect_deny "a quoted ( cannot hide --repo" 'the PR repo is evil/fork'
+hook pr-gate.sh "$(bash_in 'gh pr create --title "a (b); c" --fill' "$REPO")"; expect_allow "a quoted title with ; and ( is allowed with a pass"
+hook pr-gate.sh "$(bash_in 'gh pr create --title "x > y" --base other' "$REPO")"; expect_deny "a quoted > cannot hide --base" 'other'
+hook pr-gate.sh "$(bash_in 'az repos pr update --id 1 --title "x > y" --bypass-policy true' "$REPO")"; expect_deny "a quoted > cannot hide --bypass-policy" 'skips the branch rules or policies'
+hook pr-gate.sh "$(bash_in 'gh pr create --title "t" --fill 2>/dev/null && gh pr ready 2>&1 >/dev/null' "$REPO")"; expect_allow "unquoted redirections are dropped in both passes"
+hook pr-gate.sh "$(bash_in "export GH_REPO=evil/fork; bash -c 'export GH_REPO=acme/demo'; gh pr create --fill" "$REPO")"; expect_deny "a child shell cannot reset GH_REPO for its parent" 'the PR repo is evil/fork'
+hook pr-gate.sh "$(bash_in 'eval -- gh pr create --fill' "$OTHER")"; expect_deny "eval -- runs its words" 'mode full'
+hook pr-gate.sh "$(bash_in "eval 'cd ${OTHER}' && gh pr create --fill" "$REPO")"; expect_deny "a cd inside eval persists" 'mode full'
+hook pr-gate.sh "$(bash_in 'eval gh "pr create --fill"' "$OTHER")"; expect_deny "eval joins its words" 'mode full'
+hook pr-gate.sh "$(bash_in "bash -c 'cd ${OTHER} && gh pr create --fill'" "$REPO")"; expect_deny "a cd inside bash -c applies to its PR command" 'mode full'
+hook pr-gate.sh "$(bash_in "$(printf "cat > notes.md <<'EOF'\nit's here\nEOF\ngh pr create --fill")" "$OTHER")"; expect_deny "a PR command after an apostrophe in a heredoc" 'mode full'
+for c in 'bash -lc "gh pr create --fill"' 'bash -o pipefail -c "gh pr create --fill"' 'xargs -I{} sh -c "gh pr create --fill"' 'watch -n 5 "gh pr create --fill"' 'nohup sh -c "gh pr new"'; do
+  hook pr-gate.sh "$(bash_in "$c" "$OTHER")"; expect_deny "a shell command string is parsed: $c" 'mode full'
+done
+for c in 'env LC_ALL=C printf "%s\n" "gh pr create --fill"' 'bash script.sh' 'nohup printf "%s" "gh pr new"'; do
+  hook pr-gate.sh "$(bash_in "$c" "$OTHER")"; expect_allow "text that is not run as a command is allowed: $c"
+done
+for c in 'curl -X GET https://api.github.com/repos/acme/demo/commits/abc/statuses' 'curl -sX GET https://api.github.com/repos/acme/demo/statuses/abc' \
+         'curl --request=GET https://api.github.com/repos/acme/demo/statuses/abc' 'wget --method=GET https://api.github.com/repos/acme/demo/statuses/abc' \
+         'curl -I https://api.github.com/repos/acme/demo/statuses/abc'; do
+  hook pr-gate.sh "$(bash_in "$c" "$OTHER")"; expect_allow "an explicit GET of statuses is allowed: $c"
+done
+for c in 'curl -sXPOST https://api.github.com/repos/acme/demo/statuses/abc' 'curl -X GET -d {} https://api.github.com/repos/acme/demo/statuses/abc' 'curl --request PATCH https://dev.azure.com/acme/p/_apis/git/repositories/r/pullRequests/1/statuses'; do
+  hook pr-gate.sh "$(bash_in "$c" "$OTHER")"; expect_deny "a status write is denied: $c" 'writes a commit or pull request status'
+done
+REPO="$REPO_MAIN"
+
 # Fail closed.
 hook pr-gate.sh "$(bash_in 'gh pr create --fill' "$TMPROOT")"; expect_deny "outside a checkout is denied" 'outside a git checkout'
 R3="$(mk_repo)"; (cd "$R3" && git checkout -q --detach)
