@@ -9,7 +9,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*(create_pull_request|create_merge_request)",
+        "matcher": "mcp__.*(create_pull_request|create_merge_request|create_commit_status|repo_pull_request_write)",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pr-gate.sh\"", "timeout": 30 }
         ]
@@ -31,7 +31,19 @@
       {
         "matcher": "AskUserQuestion",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/quiz-post.sh\"", "timeout": 30 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/quiz-post.sh\"", "timeout": 60 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-check.sh\"", "timeout": 60 }
+        ]
+      },
+      {
+        "matcher": "mcp__.*(create_pull_request|create_merge_request|repo_pull_request_write)",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-check.sh\"", "timeout": 60 }
         ]
       }
     ]

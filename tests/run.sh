@@ -7,7 +7,7 @@ bash --version | head -1
 git --version
 jq --version
 rc=0
-for t in gate quiz guard; do
+for t in gate quiz guard merge; do
   bash "${here}/${t}.sh" || rc=1
 done
 [ "$rc" = 0 ] && echo "ALL PASSED" || echo "SOME FAILED"

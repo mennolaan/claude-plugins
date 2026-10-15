@@ -5,11 +5,14 @@
 #        pr-quiz key < key.json            register the answer key of the next round
 #        pr-quiz status                    round and pass state
 #        pr-quiz reset [--all]             drop the open round; --all drops the pass too
+#        pr-quiz publish                   post the merge check status for a valid pass
 # It never writes a pass: only the PostToolUse grader does.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../hooks/_lib.sh
 . "${here}/../../../hooks/_lib.sh"
+# shellcheck source=../../../hooks/merge-check-lib.sh
+. "${here}/../../../hooks/merge-check-lib.sh"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
@@ -45,6 +48,7 @@ cmd_start() {
   prq_need "$base"
   if [ "$PRQ_NEED" = ok ]; then
     printf 'PASS is valid for branch %s at %s (base %s). No quiz is needed.\n' "$PRQ_BRANCH" "${PRQ_HEAD:0:7}" "$base"
+    print_merge_check
     return 0
   fi
   mb="$(git merge-base "$base_ref" HEAD)" || fail "branch ${PRQ_BRANCH} has no merge base with ${base_ref}."
@@ -54,8 +58,8 @@ cmd_start() {
     [ -f "$ROUND" ] && printf 'The open round was for another HEAD, base or mode. It is replaced.\n'
     rm -f "${PRQ_STATE}"/key-*.json
     jq -n --arg branch "$PRQ_BRANCH" --arg repo "$PRQ_ORIGIN" --arg base "$base" --arg base_ref "$base_ref" \
-      --arg head "$PRQ_HEAD" --arg mode "$PRQ_NEED" --arg from "$PRQ_FROM" --argjson count "$PRQ_COUNT" \
-      '{branch:$branch, repo:$repo, base:$base, base_ref:$base_ref, head:$head, mode:$mode,
+      --arg head "$PRQ_HEAD" --arg mode "$PRQ_NEED" --arg from "$PRQ_FROM" --argjson count "$PRQ_COUNT" --arg mb "$mb" \
+      '{branch:$branch, repo:$repo, base:$base, base_ref:$base_ref, mb:$mb, head:$head, mode:$mode,
         from:(if $from == "" then null else $from end), count:$count, round:1, status:"keyless",
         required_topics:[], failed:[], asked:[], key_sha:"", results:{}, history:[]}' | prq_write_json "$ROUND" \
       || fail "cannot write ${ROUND}"
@@ -147,10 +151,58 @@ cmd_reset() {
     "") rm -f "$ROUND" "${PRQ_STATE}"/key-*.json
         printf 'The open quiz round for branch %s is dropped. A pass, if any, stays. Use reset --all to start a full quiz again.\n' "$PRQ_BRANCH" ;;
     --all)
-      rm -f "$ROUND" "${PRQ_STATE}"/key-*.json "${PRQ_STATE}/pass.json"
-      printf 'The quiz round and the pass for branch %s are dropped. Run start for a full quiz.\n' "$PRQ_BRANCH" ;;
+      prq_mc_run pending
+      rm -f "$ROUND" "${PRQ_STATE}"/key-*.json "${PRQ_STATE}/pass.json" "${PRQ_STATE}/merge-check.json"
+      printf 'The quiz round and the pass for branch %s are dropped. Run start for a full quiz.\n' "$PRQ_BRANCH"
+      case "$PRQ_MC_RESULT" in
+        posted) printf 'Merge check: %s\n' "$PRQ_MC_MSG" ;;
+        notyet) printf 'Merge check: no pending status posted: %s\n' "$PRQ_MC_MSG" ;;
+        error) printf 'Merge check ERROR: %s\n' "$PRQ_MC_MSG"; exit 1 ;;
+      esac ;;
     *) fail "unknown argument: $1. Use: reset [--all]" ;;
   esac
+}
+
+# print_merge_check: posts the merge check status for a valid pass and prints the result.
+print_merge_check() {
+  prq_mc_run success
+  [ "${PRQ_MC_OVERRIDE:-0}" = 1 ] && { prq_mc_override_msg; printf '\n'; }
+  case "$PRQ_MC_RESULT" in
+    posted) printf 'Merge check: %s\n' "$PRQ_MC_MSG" ;;
+    skip) printf 'Merge check: the status is already posted for %s.\n' "${PRQ_HEAD:0:7}" ;;
+    notyet) printf 'Merge check: not posted yet: %s\n' "$PRQ_MC_MSG" ;;
+    error) printf 'Merge check ERROR: %s\n' "$PRQ_MC_MSG"; return 1 ;;
+  esac
+  return 0
+}
+
+cmd_publish() {
+  local base=""
+  [ -f "${PRQ_STATE}/pass.json" ] && base="$(jq -r '.base // ""' "${PRQ_STATE}/pass.json")"
+  [ -n "$base" ] || fail "no quiz pass for branch ${PRQ_BRANCH}. Run the quiz first."
+  prq_need "$base"
+  [ "$PRQ_NEED" = ok ] || fail "the pass does not cover ${PRQ_HEAD:0:7}. ${PRQ_WHY} Run the quiz first."
+  prq_mc_switch
+  if [ "$PRQ_MC" = off ]; then
+    [ "$PRQ_MC_OVERRIDE" = 1 ] && { prq_mc_override_msg; printf '\n'; }
+    fail "the merge check is off. Turn it on with {\"merge_check\": true} in .claude/pr-quiz.json, or with PR_QUIZ_MERGE_CHECK=on."
+  fi
+  print_merge_check || exit 1
+}
+
+cmd_status() {
+  print_status
+  if [ -f "${PRQ_STATE}/pass.json" ]; then
+    jq -r '"Pass: branch \(.branch) at \(.head[0:7]), base \(.base), \(.rounds) round(s), \(.at)"' "${PRQ_STATE}/pass.json"
+  else
+    printf 'Pass: none for branch %s.\n' "$PRQ_BRANCH"
+  fi
+}
+
+cmd_diff() {
+  [ -f "$ROUND" ] || fail "no open round. Run: $0 start"
+  # shellcheck disable=SC2046  # one argument per line
+  git diff --no-color --no-ext-diff $(scope_diff_args)
 }
 
 sub="${1:-}"; [ $# -gt 0 ] && shift
@@ -160,5 +212,6 @@ case "$sub" in
   diff) cmd_diff ;;
   status) cmd_status ;;
   reset) cmd_reset "$@" ;;
-  *) sed -n '2,8p' "$0"; exit 2 ;;
+  publish) cmd_publish ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
 esac

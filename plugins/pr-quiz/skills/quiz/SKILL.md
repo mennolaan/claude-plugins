@@ -11,7 +11,7 @@ The helper is `"${CLAUDE_SKILL_DIR}/scripts/pr-quiz"`. Run it from inside the re
 
 ## Procedure
 
-1. Run `pr-quiz start` (add `--base <branch>` when the PR targets a branch that is not the default). It prints the mode (full or delta), the number of questions, the commits, the diff stat and the files that a question may cite. If it says that a pass is valid, stop: run the blocked PR command again.
+1. Run `pr-quiz start` (add `--base <branch>` when the PR targets a branch that is not the default). It prints the mode (full or delta), the number of questions, the commits, the diff stat and the files that a question may cite. If it says that a pass is valid, stop: tell the developer the merge check line it printed (if any), and run the blocked PR command again.
 2. Run `pr-quiz diff` and read the whole diff. Read the surrounding code where a hunk is not clear alone.
 3. Write the answer key (format below). Full mode: 10 questions. Delta mode: 3 questions about the new commits only. Retry round: one question for each failed topic.
 4. Register the key: `pr-quiz key <<'EOF'` followed by the JSON and `EOF`. If it prints FAIL, fix every listed item and register again. It must print `registered round N`.
@@ -65,3 +65,4 @@ The helper is `"${CLAUDE_SKILL_DIR}/scripts/pr-quiz"`. Run it from inside the re
 - `pr-quiz reset` drops the open round and keeps a pass. When the developer asks to restart the quiz, run `pr-quiz reset --all`: it drops the pass too, then `pr-quiz start` begins a full quiz.
 - If the developer stops the quiz, the PR gate stays closed. Say so, and stop.
 - If HEAD changes during the quiz, run `pr-quiz start` again. The open round is replaced.
+- Merge check: when the repo turns it on, the plugin posts the status `pr-quiz/merge-check` after a pass, and again after a push or a PR command. `pr-quiz publish` posts it on request. Never post a status yourself with gh, curl or az.

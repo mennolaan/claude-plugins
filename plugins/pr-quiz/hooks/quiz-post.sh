@@ -4,8 +4,8 @@
 # text) against the frozen key. After each call it shows the developer which
 # answers were wrong, without the correct answer, and explains every "I don't
 # know" or free-text answer at once. At round end it reports the result. When
-# every topic is correct it writes the pass record and gives a recap of the
-# wrong answers. Only this hook writes a pass.
+# every topic is correct it writes the pass record, gives a recap of the wrong
+# answers and posts the merge check status. Only this hook writes a pass.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
@@ -112,12 +112,25 @@ if [ "$nfail" -eq 0 ]; then
     "Recap of the questions you answered wrong:\n" + (map("\(.label) \"\(.question)\"\n  Your answer: \(if .verdict == "wrong" then .answer else "none" end)\n  Correct answer: \(.correct)\n  Why: \(.explanation)\n  Evidence: \(.evidence)") | join("\n\n")) end')"
   rm -f "$round" "${PRQ_STATE}"/key-*.json
   scores="$(jq -r '[.history[] | "round \(.round) \(.correct)/\(.total)"] | join(", ")' "${PRQ_STATE}/pass.json")"
+  # shellcheck source=merge-check-lib.sh
+  . "${here}/merge-check-lib.sh"
+  prq_mc_run success
+  mc_dev=""; mc_ctx=""
+  case "$PRQ_MC_RESULT" in
+    posted) mc_dev="Merge check: ${PRQ_MC_MSG}"; mc_ctx="Merge check: ${PRQ_MC_MSG}" ;;
+    error) mc_dev="Merge check ERROR: ${PRQ_MC_MSG}"; mc_ctx="Merge check ERROR: ${PRQ_MC_MSG} Tell the developer how to fix it." ;;
+    notyet) mc_ctx="Merge check: not posted yet: ${PRQ_MC_MSG}" ;;
+  esac
+  [ "${PRQ_MC_OVERRIDE:-0}" = 1 ] && mc_dev="$(prq_mc_override_msg)"
   [ -n "$recap" ] && recap_ctx="Then explain each question in the recap below from the code at its evidence path:line." || recap_ctx=""
   dev="🎆 PR quiz passed! ${PRQ_BRANCH} at ${head:0:7}. Scores: ${scores}. The PR gate is open. 🎉"
+  [ -n "$mc_dev" ] && dev="${dev}
+${mc_dev}"
   [ -n "$recap" ] && dev="${dev}
 
 ${recap}"
-  tell "$dev" "pr-quiz: PASS. Round ${n}: ${correct} of ${total} correct, so every topic is now correct. Scores: ${scores}. The PR gate is open for branch ${PRQ_BRANCH} at ${head:0:7} (base ${base}). Tell the developer the result and the scores. ${recap_ctx} If a PR command was blocked before the quiz, run it again now.${recap:+
+  tell "$dev" "pr-quiz: PASS. Round ${n}: ${correct} of ${total} correct, so every topic is now correct. Scores: ${scores}. The PR gate is open for branch ${PRQ_BRANCH} at ${head:0:7} (base ${base}). Tell the developer the result and the scores. ${recap_ctx} If a PR command was blocked before the quiz, run it again now.${mc_ctx:+
+${mc_ctx}}${recap:+
 
 ${recap}}"
 fi
